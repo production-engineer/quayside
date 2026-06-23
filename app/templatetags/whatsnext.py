@@ -18,6 +18,10 @@ def hex_color(color):
     return color if isinstance(color, str) and HEX_COLOR.match(color) else FALLBACK_COLOR
 
 
+def safe_colors(items):
+    return [{**item, "color": hex_color(item["color"])} for item in items]
+
+
 @register.inclusion_tag("components/whatsnext.html")
 def whats_next(project_id):
     try:
@@ -58,6 +62,6 @@ def whats_next(project_id):
         "done": progress["done"],
         "completeness_pct": round(progress["completeness"] * 100),
         "segments": segments,
-        "in_flight": actions["in_flight"],
-        "next_up": actions["next_up"],
+        "in_flight": safe_colors(actions["in_flight"]),
+        "next_up": safe_colors(actions["next_up"]),
     }

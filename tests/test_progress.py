@@ -105,6 +105,24 @@ def test_in_flight_is_middle_columns_and_next_up_is_top_todo_leaves():
     assert result["next_up"][0]["id"] == "1"
 
 
+def test_each_surfaced_task_carries_its_column_color():
+    tasks = [task("1", "Building", "s2", priority=0), task("2", "Queued", "s1", priority=0)]
+    result = next_actions([TODO, DOING, DONE], tasks)
+
+    assert result["in_flight"][0]["color"] == "EFA610"
+    assert result["next_up"][0]["color"] == "323232"
+
+
+def test_hex_color_keeps_valid_hex_and_blocks_css_injection():
+    from app.templatetags.whatsnext import hex_color
+
+    assert hex_color("EFA610") == "EFA610"
+    assert hex_color("fff") == "fff"
+    assert hex_color("red;}body{display:none}") == "6b7280"
+    assert hex_color("12345") == "6b7280"
+    assert hex_color(None) == "6b7280"
+
+
 def test_next_up_falls_back_to_parents_when_no_leaf_tasks_remain():
     tasks = [
         task("1", "Cat A", "s1", priority=0, is_leaf=False),

@@ -1,0 +1,9 @@
+# Test-only dependencies (not installed in production).
+# Install with: pip install -r requirements.txt -r requirements-test.txt
+# For the UI tests, also run: playwright install chromium
+-r requirements.txt
+pytest==9.1.1
+pytest-django==4.12.0
+pytest-playwright==0.8.0
+playwright==1.60.0
+mongomock==4.3.0

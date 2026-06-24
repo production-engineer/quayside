@@ -47,7 +47,9 @@ def _backend_is_django():
 @pytest.fixture(autouse=True)
 def backend(request):
     if _backend_is_django():
-        request.getfixturevalue("db")
+        manages_db = {"live_server", "transactional_db", "django_db_reset_sequences"}
+        if manages_db.isdisjoint(request.fixturenames):
+            request.getfixturevalue("db")
         yield
         return
     mongoengine.disconnect_all()

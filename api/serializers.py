@@ -1,84 +1,78 @@
-from rest_framework_mongoengine.serializers import DocumentSerializer, EmbeddedDocumentSerializer
 from rest_framework import serializers
-from api.models import User, Project, Task, Feedback
+
+from api.models import Feedback, Project, Status, Task, User, new_id
 
 
-class UserSerializer(DocumentSerializer):
+class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        # Default to all fields
+        fields = "__all__"
 
-class StatusSerializer(EmbeddedDocumentSerializer):
+
+class StatusSerializer(serializers.ModelSerializer):
+    id = serializers.CharField(required=False)
+
     class Meta:
-        model=Project.Status
-        fields = '__all__'
+        model = Status
+        fields = ["id", "name", "color", "order"]
 
-class ProjectSerializer(DocumentSerializer):
-    taskStatuses = StatusSerializer(many=True)
+
+class ProjectSerializer(serializers.ModelSerializer):
+    taskStatuses = StatusSerializer(many=True, required=False)
+
     class Meta:
         model = Project
-        fields = '__all__'
-        # Default to all fields
+        fields = "__all__"
 
     def create(self, validated_data):
-        status_data_list = validated_data.pop('taskStatuses', [])
-        project = Project(**validated_data)
-        project.taskStatuses = []
-
-        for status_data in status_data_list:
-            project.taskStatuses.append(Project.Status(**status_data))
-
-        project.save()
+        statuses = validated_data.pop("taskStatuses", None)
+        project = Project.objects.create(**validated_data)
+        if statuses is None:
+            statuses = Project.create_default_task_statuses()
+        for status in statuses:
+            Status.objects.create(
+                id=status.get("id") or new_id(),
+                project=project,
+                name=status["name"],
+                color=status["color"],
+                order=status["order"],
+            )
         return project
-        
-    def update(self, instance, validated_data):
-        # Extract the embedded document data
-        status_data_list = validated_data.pop('taskStatuses', [])
-        
-        # Update the main document fields
-        instance.name = validated_data.get('name', instance.name)
-        instance.description = validated_data.get('description', instance.description)
-        instance.types = validated_data.get('types', instance.types)
-        instance.objectives = validated_data.get('objectives', instance.objectives)
-        instance.startDate = validated_data.get('startDate', instance.startDate)
-        instance.endDate = validated_data.get('endDate', instance.endDate)
-        instance.budget = validated_data.get('budget', instance.budget)
-        instance.assumptions = validated_data.get('assumptions', instance.assumptions)
-        instance.scopesIncluded = validated_data.get('scopesIncluded', instance.scopesIncluded)
-        instance.scopesExcluded = validated_data.get('scopesExcluded', instance.scopesExcluded)
-        instance.risks = validated_data.get('risks', instance.risks)
-        instance.userIDs = validated_data.get('userIDs', instance.userIDs)
-        instance.projectManagerIDs = validated_data.get('projectManagerIDs', instance.projectManagerIDs)
-        instance.sponsors = validated_data.get('sponsors', instance.sponsors)
-        instance.contributorIDs = validated_data.get('contributorIDs', instance.contributorIDs)
-        instance.completionRequirements = validated_data.get('completionRequirements', instance.completionRequirements)
-        instance.qualityAssurance = validated_data.get('qualityAssurance', instance.qualityAssurance)
-        instance.KPIs = validated_data.get('KPIs', instance.KPIs)
-        instance.otherProjectDependencies = validated_data.get('otherProjectDependencies', instance.otherProjectDependencies)
-        instance.informationLinks = validated_data.get('informationLinks', instance.informationLinks)
-        instance.completionStatus = validated_data.get('completionStatus', instance.completionStatus)
-        instance.teams = validated_data.get('teams', instance.teams)
 
-        # Add the new embedded documents to the main document
-        for status_data in status_data_list:
-            instance.taskStatuses.append(Project.Status(**status_data))
-        
-        # Save the main document
+    def update(self, instance, validated_data):
+        statuses = validated_data.pop("taskStatuses", serializers.empty)
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
         instance.save()
+        if statuses is not serializers.empty:
+            keep = {status["id"] for status in statuses if status.get("id")}
+            instance.taskStatuses.exclude(id__in=keep).delete()
+            for status in statuses:
+                Status.objects.update_or_create(
+                    id=status.get("id") or new_id(),
+                    defaults={
+                        "project": instance,
+                        "name": status["name"],
+                        "color": status["color"],
+                        "order": status["order"],
+                    },
+                )
         return instance
 
 
-class TaskSerializer(DocumentSerializer):
+class TaskSerializer(serializers.ModelSerializer):
     class Meta:
         model = Task
-        # Default to all fields
+        fields = "__all__"
 
-class FeedbackSerializer(DocumentSerializer):
+
+class FeedbackSerializer(serializers.ModelSerializer):
     class Meta:
         model = Feedback
+        fields = "__all__"
 
 
 class GeneratedTaskSerializer(serializers.Serializer):
     projectID = serializers.CharField(required=True)
-    name = serializers.CharField(required=True)  # project name
+    name = serializers.CharField(required=True)
     description = serializers.CharField(allow_blank=True, allow_null=True)

@@ -53,6 +53,8 @@ def next_actions(statuses, tasks, limit=3):
 
     done_id = str(ordered[-1]["id"])
     middle_ids = {str(status["id"]) for status in ordered[1:-1]}
+    color_by_status = {str(status["id"]): status["color"] for status in ordered}
+    todo_color = ordered[0]["color"]
 
     in_flight, todo = [], []
     for task in tasks:
@@ -68,12 +70,15 @@ def next_actions(statuses, tasks, limit=3):
     leaves = [task for task in todo if task.get("is_leaf")]
     next_pool = leaves if leaves else todo
 
-    def brief(task):
-        return {"id": str(task["id"]), "name": task["name"]}
+    def brief(task, color):
+        return {"id": str(task["id"]), "name": task["name"], "color": color}
 
     return {
-        "in_flight": [brief(task) for task in sorted(in_flight, key=rank)],
-        "next_up": [brief(task) for task in sorted(next_pool, key=rank)[:limit]],
+        "in_flight": [
+            brief(task, color_by_status.get(str(task["status_id"]), todo_color))
+            for task in sorted(in_flight, key=rank)
+        ],
+        "next_up": [brief(task, todo_color) for task in sorted(next_pool, key=rank)[:limit]],
     }
 
 

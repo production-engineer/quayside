@@ -151,8 +151,19 @@ class KanbanAPIView(APIView):
         project_id = updating_task.projectID_id
         old_status_id = updating_task.statusId_id
         old_priority = updating_task.priority
-        new_status_id = taskData.get("statusId")
-        new_priority = taskData.get("priority")
+        new_status_id = taskData.get("statusId") or None
+
+        # The board does not always send a priority (a plain column move). Treat a
+        # missing/blank priority as "append to the end of the target column" so the
+        # status change still persists instead of failing on a None comparison.
+        try:
+            new_priority = int(taskData.get("priority"))
+        except (TypeError, ValueError):
+            new_priority = (
+                Task.objects.filter(projectID=project_id, statusId=new_status_id)
+                .exclude(id=updating_task.id)
+                .count()
+            )
 
         old_status_tasks = []
         if old_priority is not None:

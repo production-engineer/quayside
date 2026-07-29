@@ -97,6 +97,24 @@ This is a Django project. Review the top-level directory structure and any exist
 
 The default branch is `dev` (not `main`). Target PRs against `dev`.
 
+## Repo homes
+
+Quayside has two GitHub homes; this one is where active work happens:
+
+- **Erik's fork (this repo):** `production-engineer/quayside`, local clone `~/repos/quayside-fork`. Erik's own line: branches and PRs stay within the fork against `dev`, not back to the team org, unless he says otherwise.
+- **Team app (reference):** `quayside-app/quayside`, local clone `~/repos/quayside`.
+- `production-engineer/quayside_personal` is a separate tracking repo (MVP/STATUS/BLOCKERS), NOT app code.
+
+## Running the dev server
+
+`python` is shell-aliased to system Python on this machine, so `source venv/bin/activate` is shadowed. Run the dev server with a venv interpreter by absolute path and force debug:
+
+```bash
+DEBUG_BOOL=True /Users/erikwilliams/repos/quayside/venv/bin/python manage.py runserver
+```
+
+(The fork has no venv of its own; the team clone's venv at `~/repos/quayside/venv` is the known-working interpreter.) Then hit `/dev-login/` (only registered when DEBUG is on) to set the apiToken cookie. Persistence is MongoDB Atlas via `.env` (gitignored; copy it into new worktrees and clones).
+
 ## Naming
 
 Names should be **short, descriptive, and memorable** — useful enough to understand at a glance, entertaining enough to stick.

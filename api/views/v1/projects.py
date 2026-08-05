@@ -1,13 +1,10 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from bson.objectid import ObjectId
 from django.utils.decorators import method_decorator
-from django.core.exceptions import ObjectDoesNotExist
 
 from api.decorators import apiKeyRequired
 from api.serializers import ProjectSerializer
-from api.views.v1.tasks import TasksAPIView
 from api.models import Project
 from api.utils import getAuthorizationToken, decodeApiKey
 
@@ -199,8 +196,8 @@ class ProjectsAPIView(APIView):
                 projectData["userIDs"].append(userID)
 
             projects = Project.objects.filter(
-                userIDs__all=projectData.pop("userIDs"), **projectData
-            )  # Query mongo
+                userIDs__contains=projectData.pop("userIDs"), **projectData
+            )
 
             if not projects:
                 return {
@@ -229,12 +226,12 @@ class ProjectsAPIView(APIView):
 
         try:
             project = Project.objects.get(id=projectData["id"])
-        except ObjectDoesNotExist:
+        except Project.DoesNotExist:
             return "Project not found", status.HTTP_404_NOT_FOUND
 
         # Check if userID is in the project's list of UserIDs
         userID = decodeApiKey(authorizationToken).get("userID")
-        if ObjectId(userID) not in project["userIDs"]:
+        if userID not in project.userIDs:
             return {
                 "message": "User not authorized to edit this project"
             }, status.HTTP_403_FORBIDDEN
@@ -293,22 +290,20 @@ class ProjectsAPIView(APIView):
         if "id" not in projectData:
             return {"message": "Parameter 'id' required"}, status.HTTP_400_BAD_REQUEST
         ID = projectData["id"]
-        project = Project.objects.get(id=ID)
+
+        try:
+            project = Project.objects.get(id=ID)
+        except Project.DoesNotExist:
+            return "No project found to delete.", status.HTTP_404_NOT_FOUND
 
         userID = decodeApiKey(authorizationToken).get("userID")
-        if ObjectId(userID) not in project["userIDs"]:
+        if userID not in project.userIDs:
             return {
                 "message": "Not authorized to delete project."
             }, status.HTTP_401_UNAUTHORIZED
 
-        message, httpsCode = TasksAPIView.deleteTasks(
-            {"projectID": ID}, authorizationToken
-        )
-        if httpsCode != status.HTTP_200_OK and httpsCode != status.HTTP_404_NOT_FOUND:
-            return message, httpsCode
-
-        numberObjectsDeleted = project.delete()
-        if numberObjectsDeleted == 0:
+        deleted, _ = project.delete()
+        if deleted == 0:
             return "No project found to delete.", status.HTTP_404_NOT_FOUND
 
         return "Project Deleted Successfully", status.HTTP_200_OK

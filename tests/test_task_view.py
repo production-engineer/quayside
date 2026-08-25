@@ -98,6 +98,20 @@ class TaskViewStatusChoices(SimpleTestCase):
 
         self.assertFalse(hasattr(views.taskView, "statusData"))
 
+    def getTaskForm(self, projectID):
+        request = self.requests.get(f"/project/{projectID}/kanban/create-task/")
+        request.COOKIES["apiToken"] = "token"
+        return views.taskView(request, projectID, "kanban")
+
+    def test_a_get_for_one_project_does_not_bind_a_later_post_for_another(self):
+        self.getTaskForm("p1")
+
+        response = self.postTask("p2", "p2-todo")
+
+        self.assertEqual(response.status_code, 302)
+        self.createTasks.assert_called_once()
+        self.assertEqual(self.createTasks.call_args.args[0]["statusId"], "p2-todo")
+
     def test_post_rejects_a_status_from_another_project(self):
         response = self.postTask("p2", "p9-todo")
 

@@ -32,14 +32,6 @@ from api.views.v1.statuses import StatusesAPIView
 from app.context_processors import global_context
 from app.forms import NewProjectForm, TaskForm, ProjectForm, TaskFeedbackForm
 
-# allow the use of static variables in a function
-def static_vars(**kwargs):
-    def decorate(func):
-        for k in kwargs:
-            setattr(func, k, kwargs[k])
-        return func
-    return decorate
-
 
 def redirectOffSite(request):
     return redirect("https://github.com/quayside-app/quayside")
@@ -268,7 +260,6 @@ def editProjectView(request, projectID):
 
 
 @apiKeyRequired
-@static_vars(statusData=[]) # creates a static function variable that can be used anytime we access the function
 def taskView(request, projectID:str, viewType:str, taskID:str=None, parentTaskID:str=None):
     """
     Renders the view for a specific task within a project as a form.
@@ -315,8 +306,15 @@ def taskView(request, projectID:str, viewType:str, taskID:str=None, parentTaskID
         return HttpResponseServerError(f"An error occurred: {userDataList.get('message')}")
     assigneeChoices = [(userData.get('id'), userData.get('username')) for userData in userDataList]
 
+    statusData, statusCode = StatusesAPIView.getStatuses(
+        {"projectID": projectID}, getAuthorizationToken(request))
+    if statusCode != status.HTTP_200_OK:
+        print(f"Statuses fetch failed: {statusData.get('message')}")
+        return HttpResponseServerError(f"An error occurred: {statusData.get('message')}")
+    statusChoices = [(stat["id"], stat["name"]) for stat in statusData]
+
     if request.method == "POST":
-        form = TaskForm(request.POST, status_choices=[(stat["id"], stat["name"]) for stat in taskView.statusData])
+        form = TaskForm(request.POST, status_choices=statusChoices)
         form.fields['assignees'].choices = assigneeChoices
 
         if form.is_valid():
@@ -400,16 +398,8 @@ def taskView(request, projectID:str, viewType:str, taskID:str=None, parentTaskID
             durationString = durationString.strip()
 
             
-        taskView.statusData, statusCode = StatusesAPIView.getStatuses(
-            {"projectID": projectID}, getAuthorizationToken(request))
-        if statusCode != status.HTTP_200_OK:
-            print(f"Task fetch failed: {data.get('message')}")
-            return HttpResponseServerError(f"An error occurred: {data.get('message')}")
-        
-        initialStatus = taskView.statusData[0]["name"]
-        status_choices = []
-        for stat in taskView.statusData:
-            status_choices.append((stat["id"], stat["name"]))
+        initialStatus = statusData[0]["name"]
+        for stat in statusData:
             if taskData and taskData.get("statusId") == stat["id"]:
                 initialStatus = stat["id"]
         
@@ -425,10 +415,10 @@ def taskView(request, projectID:str, viewType:str, taskID:str=None, parentTaskID
                 "assignees": taskData.get("contributorIDs", "")
             }
             
-            form = TaskForm(initial=initialData, status_choices=status_choices)
+            form = TaskForm(initial=initialData, status_choices=statusChoices)
 
         else:
-            form = TaskForm(status_choices=status_choices)
+            form = TaskForm(status_choices=statusChoices)
 
         form.fields['assignees'].choices = assigneeChoices
     return render(

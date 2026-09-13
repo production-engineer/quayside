@@ -20,7 +20,13 @@ Accepted
 
 quayside is a Django plus MongoDB app built in 2023 and 2024 by a student team and a loose volunteer group. Erik's verdict on 2026-09-13: "the software was written by ameteurs." The production Google Cloud project is being allowed to lapse on purpose, the Mongo to Postgres migration (fork PR #8) never merged, and a code sweep the same day found seven security defects in the auth path (constant OAuth state, one secret used as both JWT signing key and Fernet key, a committed Django secret, two endpoints that skip the membership check, cookie mutations with no CSRF token, client secrets printed to stdout).
 
-Two things changed to make this urgent. Remote Hands is leaving HubSpot and needs a system of record for tasks and contacts, and Erik ruled on 2026-08-15 that quayside is that system. And the requirements register now exists: a Google Sheet of 198 rows covering every behavior of the old app plus the vision material from 2018 to 2026, so a rebuild can be scoped against a list instead of against memory.
+Two things changed to make this urgent. Remote Hands is leaving HubSpot and needs a system of record for tasks and contacts, and Erik ruled on 2026-08-15 that quayside is that system. And the requirements register now exists: a Google Sheet of 209 rows (IDs run 9 to 232 with gaps, since the sheet and the planning chat share one number sequence) covering every behavior of the old app plus the vision material from 2018 to 2026, so a rebuild can be scoped against a list instead of against memory. Rows 222 to 232 came from Erik's hand-drawn wireframe of 2023-09-01 (found and filed in the Drive folder on 2026-09-13): WBS numbering, criticality per task, four task-state colors, the assistant's four prompts, a GitHub-style directory, slash search, map controls, sidebar utilities, an integrations footer and a margin note reading "All history recorded".
+
+Three questions were open when this ADR was first written and are closed as of 2026-09-13:
+
+- 55, which Atlas projects to import: all 423, imported as archived. Erik owns the triage through the "Keep? (Erik)" column on the register's second tab and said it is already handled; the question is not raised again.
+- 56, who sees the beta: admins only, and each admin opts in for themselves. Erik's first look at the Slice 0 preview overturned the earlier idea of an email allowlist: "the beta feature needs to be under my profile. So I need to click on my name to add and go into settings to turn on this beta feature. Otherwise, the quayside side button should not be present." The switch shipped in `remote-hands-ak` PR #73 as `user_metadata.beta_features`; the admin role rule in the proxy still decides who may reach the route, the switch only decides who sees it.
+- 57, XP for finished work (row 223): stays v2.
 
 Constraints:
 
@@ -53,7 +59,7 @@ Constraints:
 
 ## Decision
 
-Build quayside as a beta route inside `remote-hands-ak` (Next.js, Supabase, Vercel), behind a feature flag, with its own `quayside` schema in the Remote Hands Supabase project and row level security on from the first table. The quayside repo holds the requirements sheet, this ADR and the spec until the module is extracted. Carry forward only the data model shape from the Postgres branch, renamed to the portal's conventions. From Atlas, import users as contacts and their projects with tasks; skip feedback and test projects.
+Build quayside as a beta route inside `remote-hands-ak` (Next.js, Supabase, Vercel), admin-gated and hidden behind a per-user beta switch under Settings, with its own `quayside` schema in the Remote Hands Supabase project and row level security on from the first table. The quayside repo holds the requirements sheet, this ADR and the spec until the module is extracted. Carry forward only the data model shape from the Postgres branch, renamed to the portal's conventions. From Atlas, import users as contacts and their projects with tasks; skip feedback and test projects.
 
 Erik's words, 2026-09-13: "Versailles [Vercel] would be a great place to do things on if we can. And we'll build in the Kuwait side [quayside] repo, but we will... let's actually have this hosted as a beta feature on their Mote Hands [Remote Hands] app."
 
@@ -68,7 +74,7 @@ Erik's words, 2026-09-13: "Versailles [Vercel] would be a great place to do thin
 ### Negative
 
 - Extraction to a standalone quayside.app is a future project with its own migration.
-- Full parity including planned features is a long list; the spec slices it and Slice 0 (schema, gate, nav, an empty beta page) is the first live validation, per decision 54 as revised.
+- Full parity including planned features is a long list; the spec slices it and Slice 0 is the first live validation, per decision 54 as revised. Slice 0 landed in two PRs: the gate, nav entry, opt-in switch and beta page went live on portal.remotehandsak.com on 2026-09-13 (PR #73, commit fb0eae6); the schema follows on its own PR so the first live check carried no database risk.
 - The requirements sheet is a Google Sheet, outside git; the spec references row IDs and the sheet is the source of truth for them.
 
 ## Spec
@@ -77,11 +83,12 @@ Erik's words, 2026-09-13: "Versailles [Vercel] would be a great place to do thin
 
 ## References
 
-- Requirements register: https://docs.google.com/spreadsheets/d/1xSLNc6Y9vlIriipU_w_GrWAKqodkFzcM9T3XNvOLHbE (rows 9 to 221)
+- Requirements register: https://docs.google.com/spreadsheets/d/1xSLNc6Y9vlIriipU_w_GrWAKqodkFzcM9T3XNvOLHbE (rows 9 to 232)
+- Wireframe sketch: "quayside.app Wireframe Sketch 2023-09-01.jpg" in the Drive folder "quayside.app Project" (rows 222 to 232)
 - Old app Postgres model: `production-engineer/quayside` PR #8, `api/models.py`
 - Source documents: Quay PM Tool UX draft (2018), Vision for quayside (2024), From Concept to Completion (2024), beadedcloud Vision: Future of Insights (2026)
 - Prior ADR on the old stack: [2026-06-24-postgres-django-orm.md](./2026-06-24-postgres-django-orm.md) on the `pg-migration` branch
 
 ## Consensus
 
-Erik Williams, by picker answers 51 to 54 on 2026-09-13.
+Erik Williams, by picker answers 51 to 54 on 2026-09-13; 55 and 57 by chat the same day; 56 revised on the Slice 0 preview the same day.

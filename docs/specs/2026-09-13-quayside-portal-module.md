@@ -1,6 +1,6 @@
 # quayside Portal Module Specification
 
-Status: Draft v1 (2026-09-13)
+Status: Draft v2 (2026-09-13; v1 the same day)
 
 Purpose: quayside answers "what's next?" for a project by holding its goal, sensing reality from the places work already happens, and ranking the next action; this spec describes it as a beta module inside the Remote Hands staff portal.
 
@@ -16,7 +16,7 @@ Operational problems this module solves:
 - Nobody can answer "what should I work on next" for a project without asking the person who holds it in their head.
 - HubSpot contacts and organizations have no destination once the subscription ends.
 - The 108 users and 423 projects in the old quayside database are stranded on a Mongo cluster whose hosting is lapsing.
-- The old app's features exist only as code nobody trusts; the register has 198 rows describing them and there is no running system that matches it.
+- The old app's features exist only as code nobody trusts; the register has 209 rows describing them and there is no running system that matches it.
 
 Important boundary: this module is not responsible for payroll, assignments, work items, GOTV or any existing portal feature. It reads nothing from the `public` or `voting` schemas except the signed-in user's identity and role. It does not replace GitHub issues for the Remote Hands code repos.
 
@@ -24,7 +24,7 @@ Important boundary: this module is not responsible for payroll, assignments, wor
 
 ### 2.1 Goals
 
-- Every behavior in the register marked v1 (R9 to R18, R24 to R26, R28, R29, R44, R47 to R221 where Version is v1) exists in the module, and the 16 rows carried as fixes behave correctly rather than as the old app did.
+- Every behavior in the register marked v1 (R9 to R18, R24 to R26, R28, R29, R44, R47 to R232 where Version is v1) exists in the module, and the 16 rows carried as fixes behave correctly rather than as the old app did.
 - A Remote Hands admin can sign in to the portal once and reach quayside from the sidebar; no second login (decision 51).
 - All quayside data lives in a `quayside` schema in the Remote Hands Supabase project with row level security on every table from the first migration (decision 52).
 - Contacts and projects from the old Atlas database are imported once, idempotently, with their old ObjectIds preserved as `legacy_id` (decision 53).
@@ -35,6 +35,7 @@ Important boundary: this module is not responsible for payroll, assignments, wor
 - A standalone quayside.app deployment (Option 2 in the ADR); pointing the domain at this module is a later decision.
 - Bids, escrow, marketplace, reputation (R30).
 - Monte Carlo estimation (R34), portfolio view (R35), billing (R36).
+- XP for completed work (R223): v2 by decision 57. The `tasks` model carries nothing for it in v1; when it comes, XP is a derived sum over `audit_log` completions, not a stored counter.
 - Rebuilding Django, Mongo, Cloud Run, gunicorn, D3 or pytest specifics (the 39 rows marked superseded); the intent behind each is met by the new stack and named where it matters.
 - Feedback documents from Atlas (30 rows of mood entries); not imported.
 - Any write to HubSpot.
@@ -83,6 +84,7 @@ Fields:
 - `id` (uuid)
 - `legacy_id` (text, unique, nullable): the Atlas ObjectId, 24 hex characters.
 - `name` (text, not null, 1 to 200 characters after trim)
+- `slug` (text, not null): lowercase letters, digits and hyphens, 1 to 64 characters, unique per organization; derived from `name` on create and unchanged on rename in v1 (R222, Section 6.3).
 - `description` (text, nullable)
 - `goal` (text, nullable in the schema, required by the UI for new projects; R9)
 - `done_when` (text, nullable, same rule as goal)
@@ -90,6 +92,7 @@ Fields:
 - `budget_cents` (bigint, nullable): the old app stored budget as free text; the importer parses digits and stores null when it cannot.
 - `state` (text, check in `planning`, `active`, `archived`): `planning` is the project space, `active` the workspace (R29); imported projects arrive `archived` (Section 9).
 - `charter` (jsonb, default `{}`): objectives, assumptions, scopes_included, scopes_excluded, risks, sponsors, completion_requirements, quality_assurance, kpis, information_links, types. Replaces the eleven string-array columns of the old model (R26, R50).
+- `organization_id` (uuid, nullable, references `organizations`): the org segment of the URL; null projects address as `/quayside/-/<project>` in v1.
 - `owner_id` (uuid, not null, references `auth.users`)
 - `created_by_import` (boolean, default false)
 
@@ -133,6 +136,8 @@ Fields:
 - `capability` (text, nullable, check in `ai_doable`, `ai_assisted`, `human_only`, `unknown`; R59)
 - `source` (text, not null, default `quayside`, check in `quayside`, `import`, `github`, `email`, `discord`, `sheet`)
 - `external_ref` (text, nullable, unique where not null): for example `owner/repo#12`.
+- `number` (text, not null): the work-breakdown number, `4.1.2` for the second child of `4.1` (R222). Unique per project. Assigned on create as parent number plus the next free integer among siblings; on re-parent or reorder the moved subtree is renumbered depth-first from the new position, and the old numbers are kept in `audit_log`, so an old URL resolves through the history to the task's current number (Section 6.3).
+- `attention` (text, nullable, check in `needs_review`, `action_requested`): the two person-set states of R225. In progress is the status column, done is the done column, critical path is computed (Section 8.5); none of those three is stored on the row.
 
 ### 4.5 `task_links`
 
@@ -149,7 +154,7 @@ Fields:
 
 People and organizations (R15).
 
-`organizations`: `id`, `legacy_hubspot_id` (text, unique, nullable), `name` (text, not null), `domain` (text, nullable, lowercased), `notes` (text).
+`organizations`: `id`, `legacy_hubspot_id` (text, unique, nullable), `name` (text, not null), `slug` (text, not null, unique; same shape as `projects.slug`), `domain` (text, nullable, lowercased), `notes` (text).
 
 `contacts`: `id`, `legacy_id` (text, unique, nullable; Atlas user id), `legacy_hubspot_id` (text, unique, nullable), `user_id` (uuid, nullable, references `auth.users`; set when a contact is also a portal user), `email` (text, unique, lowercased, trimmed), `first_name`, `last_name` (text), `organization_id` (uuid, nullable), `phone` (text, nullable), `source` (text, check in `atlas`, `hubspot`, `manual`), `notes` (text).
 
@@ -171,19 +176,38 @@ One row per importer run (Section 9).
 
 - `id`, `source` (text), `started_at`, `finished_at`, `dry_run` (boolean), `counts` (jsonb), `errors` (jsonb), `run_by` (uuid).
 
-### 4.11 Normalization Rules
+### 4.11 `audit_log`
+
+Every change to a project or task, viewable per task (R232, "All history recorded").
+
+- `id` (bigint identity), `occurred_at` (timestamptz, default `clock_timestamp()`)
+- `actor_id` (uuid, nullable, references `auth.users`; null for the importer and cron routes, which set `actor_label` instead)
+- `actor_label` (text, nullable): `import`, `cron`, `discord`, or null when `actor_id` is set
+- `table_name` (text, check in `projects`, `statuses`, `tasks`, `task_links`, `task_assignees`, `project_members`)
+- `row_id` (uuid), `project_id` (uuid, not null, denormalized so a project's history is one query)
+- `op` (text, check in `insert`, `update`, `delete`)
+- `before` (jsonb, nullable), `after` (jsonb, nullable): the full row image; `update` stores both, `insert` only `after`, `delete` only `before`.
+
+Written by one row-level trigger attached to each listed table, never by application code, so an import and a drag on the board leave the same kind of record. "All history" in R232 is read as project and task history: `contacts`, `organizations`, `feedback` and `signals` are not audited in v1, so names, emails and phones never land in a second table (Section 15); `imports` is its own log. Rows are never updated or deleted by any policy; the only write path is the trigger. Retention is unbounded in v1.
+
+### 4.12 Normalization Rules
 
 - Emails: trim, lowercase, compare exactly.
 - Names for uniqueness (statuses): trim, collapse internal whitespace, compare case-insensitively.
 - Hex colors: strip a leading `#`, uppercase; accept 6 or 8 characters; anything else is a validation error, never silently replaced (the old app fell back to grey, R56 and R106).
 - Duration input: tokens `Nw`, `Nd`, `Nh`, `Nm` in any order, decimals allowed; week = 5 working days, day = 8 hours (the spec value, fixing the old code's 24-hour day, R73); a bare number is minutes; result rounded to the nearest minute.
 - Legacy ids: exactly 24 lowercase hex characters or the import row is rejected.
+- WBS numbers (R222): dot-separated positive integers with no leading zeros; the root level is `1`, `2`, `3`; compared segment by segment as integers, so `4.10` sorts after `4.9`. A URL segment that fails this shape is a `404`, not a search.
 
 ## 5. Access and Gating
 
 ### 5.1 Edge gate
 
-Add `{ path: '/quayside', roles: ['admin'] }` to `PROTECTED_ROUTES` in `lib/supabase/proxy.ts`. Unauthenticated requests redirect to `/login`; authenticated non-admins are redirected to the portal home. Widening to `organization_member` is a one-line change and a deploy (decision 56 assumption: admin-only first; the portal has no feature flag system and this spec does not add one).
+`{ path: '/quayside', roles: ['admin'] }` in `PROTECTED_ROUTES` in `lib/supabase/proxy.ts` (shipped, PR #73). Unauthenticated requests redirect to `/login`; authenticated non-admins are redirected to the portal home. Widening to `organization_member` is a one-line change and a deploy.
+
+### 5.1.1 Beta switch (decision 56, revised 2026-09-13)
+
+The route is also hidden behind a per-user opt-in. `user_metadata.beta_features` on the auth user is a string array parsed by `src/features/shared/auth/application/beta-features.ts` (unknown values dropped, missing key means nothing on). The session exposes it as `user.betaFeatures`; the nav item carries `beta: "quayside"` and is filtered out until the flag is present; `app/(dashboard)/quayside/layout.tsx` redirects an admin without the flag to `/settings/beta`, where a switch writes the array with `auth.updateUser` and then `auth.refreshSession` so the new JWT carries it at once. The switch only unhides; the role rule above still decides who may reach the route, which is why a user-writable claim is acceptable here. Erik's words on the first preview: "the beta feature needs to be under my profile ... Otherwise, the quayside side button should not be present." The earlier email-allowlist idea is withdrawn.
 
 ### 5.2 Server gate
 
@@ -195,7 +219,7 @@ Every table enables RLS in the migration that creates it. Policies are created i
 
 ### 5.4 Navigation
 
-Add a `quayside` entry with `roles: ['admin']` to `navigationItems` and its lucide icon to `iconMap`. Children: Home, Projects, Contacts, Imports.
+The `quayside` entry in `navigationItems` has `roles: ['admin']` and `beta: "quayside"` (Section 5.1.1), Compass icon in `iconMap`; today it links to `/quayside/home`. From Slice 2 it gains children: Home, Projects, Contacts, Imports. The module's own left directory (R227) lives inside the quayside pages, not in the portal sidebar.
 
 ## 6. Projects, Tasks and Boards (parity subsystem)
 
@@ -213,6 +237,30 @@ Add a `quayside` entry with `roles: ['admin']` to `navigationItems` and its luci
 ### 6.2 Validation and error surface
 
 Named errors: `ValidationError` (400), `ForbiddenError` (403), `NotFoundError` (404), `ConflictError` (409, duplicate status name or reorder mismatch), `CycleError` (409, a `blocks` edge that would create a cycle). All are rendered by the route's `error.tsx` with a message a person can act on; no `alert()` and no plain-text 500 pages (fixes R174).
+
+### 6.3 Addressing and numbering (R222)
+
+- Every task has a WBS `number` (Section 4.4) and the URL for a task is `/quayside/<org>/<project>/<number>`, where `<org>` and `<project>` are slugs (lowercase, hyphenated, unique per parent; stored on `organizations.slug` and `projects.slug`). Breadcrumb shows `org / project / number`, and the task header shows the number before the name.
+- Creating a child of `4.1` gives it `4.1.N` where N is one more than the largest sibling segment; creating a root gives the next root integer. Renumbering on move is deterministic (R222): the moved subtree takes the destination's next free number and its descendants are renumbered depth-first in `position` order, in the same transaction as the move. The register asks only for determinism; this particular rule is the spec's choice.
+- An old number in a URL is resolved through `audit_log` (`after.number` history) to the task's current row and redirects with a 308; a number that never existed is a 404.
+- Slugs are separate from names: renaming a project does not change its slug in v1 (a redirect table is a recommended extension).
+
+### 6.4 Task states and the three buttons (R225)
+
+A task card shows Start, Track and Done:
+
+- Start moves the task into the first non-done column whose name is In-Progress or, when none is, the second column, and clears `attention`. The card turns green (in progress).
+- Track sets `attention = needs_review`: the task keeps its column and turns yellow, asking a teammate to look. A reviewer can set `attention = action_requested` (red) with a comment recorded in `audit_log`; the assignee clears it by pressing Start again.
+- Done moves the task to the done column (highest `position`) and clears `attention`.
+- Critical path (purple) is never set by a person; it is computed (Section 8.5) and drawn on map edges and node borders.
+
+This reading of Start, Track and Done is the spec's interpretation of the 2023 sketch, which labels the buttons but does not define them; Erik confirms or corrects it before Slice 2 builds the card. Only these four colors plus the neutral appear on nodes, edges and card buttons, and the map carries the legend (Section 12).
+
+### 6.5 Shell: directory, search and utilities (R227, R228, R230)
+
+- The quayside pages have a left directory in the GitHub style: New project, New task, Starred orgs, Projects, Team, Objectives, each a collapsible group, with the current path as a breadcrumb that matches the URL (R227). Starred orgs pin to the top; the directory's open or closed state is per user and per device (`localStorage`, not the database).
+- A search box sits in the quayside top bar; pressing `/` anywhere outside an input focuses it (R228). Results span projects, tasks and contacts the user can see; Enter opens the top result. The ranking (exact name match, then prefix, then substring, twenty per group) is the spec's proposal, since R228 fixes only the hotkey, the three indexes and Enter; Erik confirms it before Slice 8. Search is a server query with the same RLS as every list; nothing is indexed client-side in v1. Search ships in Slice 8 with the task filters (R79); the directory and utilities below ship in Slice 2 (Section 18).
+- Invite, Tutorial and Feedback sit at the bottom of the directory (R230). Invite opens the project-member invite (R124); Tutorial opens the register's Home page walk-through; Feedback opens the mood entry (R117). Marketplace is absent in v1 (R30).
 
 ## 7. Charter and Task Generation
 
@@ -257,9 +305,15 @@ function whats_next(project):
 
 Per project: schedule drift = today minus `end_date` when the done ratio is below 1; scope drift = tasks created after activation over tasks at activation; budget drift = spent over `budget_cents` where spend signals exist. Each drift line links to the signals that produced it.
 
-### 8.4 Chat (R116)
+### 8.4 Chat (R116, R226)
 
 Qpa answers "what's next", "why", "why not X" and "re-rank" by calling `whats_next` and `explain`; it never invents a task that is not in the table.
+
+The assistant panel opens with four fixed prompts and a free-text box (R226): "What should I work on next?" (calls `whats_next` for the current project, or the home ranking when no project is open), "What should I review next?" (tasks with `attention = needs_review` the user did not last edit, oldest first, then tasks in the done column with no reviewer entry in `audit_log`), "How can our team collaborate more effectively?" (the drift panel plus the blocked list with blocker owners), and "How can our team accelerate productivity?" (the critical path with its slack-zero tasks and the longest idle unblocked task). Each answer cites the rows it used; a question the data cannot answer says so instead of guessing. R226 names the four questions and nothing more; what each one computes, above, is the spec's interpretation, and Erik confirms or corrects it before Slice 4 builds the panel.
+
+### 8.5 Criticality (R224)
+
+For each open task, `slack = latest_start - earliest_start` from a forward and backward pass over the `blocks` graph using `duration_minutes` (tasks with zero duration count as one hour for scheduling only). `criticality = 1 - slack / project_span`, clamped to 0 to 1, where `project_span` is the longest path length in the project; shown on the card as a percentage. Tasks with `slack = 0` are the critical path and their `blocks` edges are drawn purple (R225); when several chains tie, all are critical. A cycle raises `CycleError` and the card shows the cycle. Criticality is recomputed on read and never stored. R224 fixes only that the number derives from critical-path position and slack; the formula, the one-hour floor and the clamp are the spec's proposal, and Erik confirms them before Slice 4.
 
 ## 9. Importer (decision 53)
 
@@ -280,7 +334,7 @@ Expected source counts on 2026-09-13: 108 users, 423 projects, 4,800 tasks. Deci
 
 ## 10. Feeds (R10, R13) Slice 5 and later
 
-Each connector implements `poll(since): Signal[]` and `match(signal): project_id | null`. Matching is by explicit reference first (a project or task id in the text), then by exact name match, then unmatched; unmatched signals wait in a review queue and are never auto-attached by fuzzy matching. Connectors in order: Discord (channel to project mapping table), GitHub (repo to project mapping), Google Sheets (the RH tracker), Gmail (labels). The sheet mirror is one-way in v1: quayside writes the sheet; edits in the sheet are signals, not writes.
+Integrations appear in quayside settings with a connected state (R231). In v1 Discord and GitHub connect and poll; Dart, IDE and Drive are listed and disabled with the reason "planned, not connected"; "bring your own model account" is listed and disabled, since v1 uses the server-side provider of Section 7.3 and a per-user key needs its own secret handling. Each connector implements `poll(since): Signal[]` and `match(signal): project_id | null`. Matching is by explicit reference first (a project or task id in the text), then by exact name match, then unmatched; unmatched signals wait in a review queue and are never auto-attached by fuzzy matching. Connectors in order: Discord (channel to project mapping table), GitHub (repo to project mapping), Google Sheets (the RH tracker), Gmail (labels). The sheet mirror is one-way in v1: quayside writes the sheet; edits in the sheet are signals, not writes.
 
 ## 11. Notifications (R12, R16) Slice 5 and later
 
@@ -292,6 +346,8 @@ Each connector implements `poll(since): Signal[]` and `match(signal): project_id
 
 - One palette module `src/features/quayside/shared/palette.ts` maps every enum value (state, version of a plan, drift band, risk band, status default colors) to a color; the register's colors are the same hex values. Every color is paired with a text label or icon.
 - The map view lays a project out left to right from start to `done_when`, tasks as blocks sized by duration, colored by drift and blocked state, with the What's Next card pinned and every red item visible without scrolling on a 50-block project. Render budget two seconds on a mid-range laptop.
+- Task-state colors (R225): purple for critical-path edges and node borders, yellow for `needs_review`, red for `action_requested`, green for tasks in the In-Progress column, neutral otherwise. The palette module holds the hex values; the legend renders on the map and in the task card help text, each color paired with its label (R220).
+- Map header controls (R229): Sort (by criticality or due date), Filter (by state and assignee), Undo (reverts the last move or re-parent by replaying the inverse from `audit_log`, one step in v1), a list toggle to the tree view, and Share, which copies the current URL; the recipient sees what their own access allows and nothing more, no signed links in v1.
 
 ## 13. Observability
 
@@ -346,31 +402,34 @@ Core conformance (`bun run test`, vitest, colocated `*.test.ts`, pure functions)
 - `whats_next`: zero tasks returns DONE; all blocked returns BLOCKED with blockers; ties break deterministically; a cycle raises `CycleError`; done column is highest position regardless of insertion order.
 - Move and reorder: no gaps, no duplicates, mismatch raises `ConflictError`.
 - Importer mappers: legacy id validation, email normalization, budget parsing, dangling parent to root, status id mapping.
+- WBS numbering (R222): child of `4.1` with siblings `4.1.1` and `4.1.2` becomes `4.1.3`; moving `4.1` under `2` renumbers it and its subtree to `2.N...` deterministically; `4.10` sorts after `4.9`; `04.1` is rejected.
+- Criticality (R224): a linear chain gives 100 percent to every task; a parallel branch shorter than the chain gets less than 100 percent; a cycle raises `CycleError`.
 
 Database (SQL harness under `supabase/tests/quayside/`, hand-run):
 - `anon` gets zero rows and no execute on every table and function in the schema.
 - A non-admin, non-member gets zero rows from `projects`; a member sees only their projects.
 - Deleting a project cascades to statuses, tasks, links, assignees, feedback.
+- `audit_log` (R232): one row per insert, update and delete on every listed table, with `before` and `after` images; no role can update or delete a row in it.
 
 Real integration (credentials required):
 - Importer dry run against Atlas prints counts equal to 108, 423, 4,800 (as of 2026-09-13) and writes nothing.
 - One daily Discord message round trip on a test channel.
-- Browser pass in Erik's Chrome profile on the deployed preview: create project through the charter, generate tasks, move a card, open tree and map, read the card, at desktop and 400px widths.
+- Browser pass in Erik's Chrome profile on the deployed preview: create project through the charter, generate tasks, move a card, open tree and map, read the card, press `/` and search, press Start, Track and Done and watch the colors, at desktop and 400px widths.
 
 ## 18. Implementation Checklist
 
 Slices, each one PR to `main` in `remote-hands-ak`, each deployable on its own:
 
-- Slice 0, foundation: migration creating the schema, `projects`, `project_members`, `statuses`, `tasks`, `task_links`, `contacts`, `organizations`, `imports` with RLS and grants; schema exposed in PostgREST; `database.types.ts` regenerated; `PROTECTED_ROUTES` and nav entries; an empty Home page that says "quayside beta". Done when an admin sees the nav item and a non-admin gets redirected.
+- Slice 0, foundation, two PRs. PR A (live 2026-09-13, `remote-hands-ak` PR #73): `PROTECTED_ROUTES` rule, nav entry behind the beta switch, `/settings/beta`, a Home page that says "quayside beta". PR B: migration creating the schema, `projects`, `project_members`, `statuses`, `tasks` (with `number` and `attention`), `task_links`, `task_assignees`, `contacts`, `organizations`, `imports`, `audit_log` and its trigger, with RLS and grants; schema exposed in PostgREST; `database.types.ts` regenerated. Done when an opted-in admin sees the nav item, a non-admin gets redirected, and the RLS harness is green.
 - Slice 1, import: the importer with dry run and verification; `imports` row; contacts and archived projects visible in read-only lists. Done when the dry run and the real run agree with the counts above.
-- Slice 2, parity core: project create with goal and done-when, edit, delete; tasks CRUD with nesting and re-parenting; statuses CRUD, reorder, defaults; board with drag; tree view; task detail with duration parsing and assignees. Covers R47 to R96 and R127 to R150 where v1.
+- Slice 2, parity core: project create with goal and done-when, edit, delete; tasks CRUD with nesting and re-parenting and WBS numbering (R222); statuses CRUD, reorder, defaults; board with drag; tree view; task detail with duration parsing, assignees, Start, Track and Done (R225) and per-task history (R232); the left directory and sidebar utilities (R227, R230). Covers R47 to R96 and R127 to R150 where v1.
 - Slice 3, charter and generation: conversation, outline generation, parser, retry. Covers R25, R97 to R101.
-- Slice 4, What's Next: ranker, project card, home page, drift panel, Qpa chat and mood feedback. Covers R11, R12, R102 to R121.
+- Slice 4, What's Next: ranker, criticality (R224), project card, home page, drift panel, Qpa chat with the four prompts (R226) and mood feedback. Covers R11, R12, R102 to R121.
 - Slice 5, feeds and notifications: Discord connector and daily message first, then weekly note, GitHub, sheets, Gmail. Covers R10, R13, R16.
 - Slice 6, contacts and HubSpot: contacts and organizations UI, HubSpot CSV import, sheet mirror. Covers R14, R15.
-- Slice 7, color and map: palette module applied everywhere, map view. Covers R220, R221.
-- Slice 8, remaining planned rows: teams and invites (R124), settings and profile (R82, R125), task search and filters (R79), dependency UI (R78), bulk status update (R81), feedback reporting (R122), column background images (R147), GitHub two-way sync (R166), ingestion from email and notes (R167).
+- Slice 7, color and map: palette module applied everywhere, map view with legend and header controls. Covers R220, R221, R225, R229.
+- Slice 8, remaining planned rows: teams and invites (R124), settings and profile (R82, R125), task search and filters with the slash hotkey (R79, R228), integrations settings with the disabled connectors listed (R231), dependency UI (R78), bulk status update (R81), feedback reporting (R122), column background images (R147), GitHub two-way sync (R166), ingestion from email and notes (R167).
 
 Operational validation before widening beyond admins: RLS harness green on production, importer counts verified, one week of Erik and Twyla using it for real Remote Hands work without falling back to the tracker sheet (the MVP.md test).
 
-Recommended extensions, not scheduled: standalone quayside.app deployment, Monte Carlo (R34), portfolio (R35), marketplace (R30).
+Recommended extensions, not scheduled: standalone quayside.app deployment, Monte Carlo (R34), portfolio (R35), marketplace (R30), XP (R223), slug redirects on rename, multi-step undo, Dart, IDE, Drive and bring-your-own-model connectors (R231).

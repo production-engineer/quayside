@@ -26,7 +26,7 @@ Constraints:
 
 - Remote Hands data may not run on beadedcloud infrastructure (Erik, 2026-08-21).
 - The first real user is Remote Hands operations: Erik, Twyla, and the HubSpot exit.
-- Erik wants Vercel, and wants the first deploy to match everything the old app does or planned to do, including planned features.
+- Erik wants Vercel. Full parity with everything the old app does or planned to do is the destination, but the first deploy is the smallest thing that can be validated live; the feature list is worked through slice by slice after that (decision 54, revised the same day: "I know I said everything in the app, but I really think that we should get started with a small thing first, and we're just gonna chug through that feature list as we go").
 - From the old database he wants only "people's contact info and the projects they were working on."
 
 ## Options Considered
@@ -68,7 +68,7 @@ Erik's words, 2026-09-13: "Versailles [Vercel] would be a great place to do thin
 ### Negative
 
 - Extraction to a standalone quayside.app is a future project with its own migration.
-- Full parity including planned features (decision 54) is the slowest path to a first user; the spec has to slice it so something ships early.
+- Full parity including planned features is a long list; the spec slices it and Slice 0 (schema, gate, nav, an empty beta page) is the first live validation, per decision 54 as revised.
 - The requirements sheet is a Google Sheet, outside git; the spec references row IDs and the sheet is the source of truth for them.
 
 ## Spec

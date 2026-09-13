@@ -28,7 +28,7 @@ Important boundary: this module is not responsible for payroll, assignments, wor
 - A Remote Hands admin can sign in to the portal once and reach quayside from the sidebar; no second login (decision 51).
 - All quayside data lives in a `quayside` schema in the Remote Hands Supabase project with row level security on every table from the first migration (decision 52).
 - Contacts and projects from the old Atlas database are imported once, idempotently, with their old ObjectIds preserved as `legacy_id` (decision 53).
-- The module ships in slices (Section 18); each slice is a merge to `main` that deploys and is usable on its own.
+- The module ships in slices (Section 18); each slice is a merge to `main` that deploys and is usable on its own. Slice 0 goes live first and is validated by Erik before Slice 1 starts (decision 54, revised 2026-09-13).
 
 ### 2.2 Non-Goals
 

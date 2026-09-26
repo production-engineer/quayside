@@ -49,6 +49,8 @@ class WorkItem:
     status_refs: list[str] = field(default_factory=list)
     done_refs: list[str] = field(default_factory=list)
     bot_authored: bool = False
+    verdict: str | None = None
+    verdict_evidence: str | None = None
     evidence: list[str] = field(default_factory=list)
 
     @property

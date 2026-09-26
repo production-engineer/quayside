@@ -133,6 +133,34 @@ class Cli(unittest.TestCase):
         snapshot = json.loads((self.out / "snapshot.json").read_text(encoding="utf-8"))
         self.assertIn("tasks:1", [finding["id"] for finding in snapshot["findings"]["archive"]])
 
+    def test_open_prs_get_verdicts_and_merge_ready_waits_on_erik(self):
+        pr = {"__typename": "PullRequest", "number": 5, "title": "Invented ready PR", "url": "https://github.com/invented-org/widget/pull/5",
+              "state": "OPEN", "createdAt": "2026-09-01T20:00:00Z", "updatedAt": "2026-09-10T20:00:00Z", "closedAt": None,
+              "body": "Co-Authored-By: Claude", "isDraft": False, "mergedAt": None, "repository": {"nameWithOwner": "invented-org/widget"},
+              "author": {"login": "invented-erik"}, "assignees": {"nodes": []}, "labels": {"nodes": []}, "reviewRequests": {"nodes": []}}
+        state = {"number": 5, "title": "Invented ready PR", "url": pr["url"], "isDraft": False, "mergeable": "MERGEABLE",
+                 "mergeStateStatus": "CLEAN", "reviewDecision": None, "createdAt": "2026-09-01T20:00:00Z", "author": {"login": "invented-erik"},
+                 "files": {"nodes": [{"path": "src/invented.py"}]}, "commits": {"nodes": [{"commit": {"committedDate": "2026-09-10T20:00:00Z", "statusCheckRollup": None}}]}}
+
+        def fake(args):
+            if args[:2] == ["api", "user"]:
+                return "invented-erik\n"
+            if args[:2] == ["repo", "list"]:
+                return "[]"
+            query = next(value for value in args if value.startswith("query="))
+            if "pullRequest(number: 5)" in query:
+                return json.dumps({"data": {"r0": {"p5": state, "merged": {"nodes": []}}}})
+            if any(value == "q=user:invented-org is:pr is:open archived:false -repo:beadedcloud/beadedcloud.com" for value in args):
+                return json.dumps({"data": {"search": {"issueCount": 1, "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": [pr]}}})
+            return json.dumps({"data": {"search": {"issueCount": 0, "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []}}})
+
+        self.run_cli("--owner", "invented-org", gh=fake)
+        snapshot = json.loads((self.out / "snapshot.json").read_text(encoding="utf-8"))
+        item = next(entry for entry in snapshot["items"] if entry["id"] == "github:invented-org/widget#5")
+        self.assertEqual(item["verdict"], "MERGE_READY")
+        self.assertEqual(snapshot["findings"]["waiting_on_erik"][0]["id"], "github:invented-org/widget#5")
+        self.assertIn("## PR verdicts", (self.out / "report.md").read_text(encoding="utf-8"))
+
     def test_rerenders_from_a_snapshot(self):
         self.run_cli("--no-github")
         (self.out / "board.html").unlink()

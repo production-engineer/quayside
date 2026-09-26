@@ -1,10 +1,12 @@
 import json
 import re
 import subprocess
+import time
 from dataclasses import dataclass, field
 from datetime import date
 
 from pm import signals
+from pm.verdicts import MergedPr, PrState
 from pm.model import SourceResult, WorkItem, parse_day
 
 COMMAND_TIMEOUT_SECONDS = 120
@@ -45,6 +47,20 @@ query($q: String!, $after: String) {
   }
 }
 """ % PAGE_SIZE
+
+
+PRS_PER_QUERY = 25
+RECENT_MERGED_PER_REPO = 30
+UNKNOWN_RETRY_SECONDS = 5
+FAILING_CONCLUSIONS = {"FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE"}
+FAILING_STATES = {"FAILURE", "ERROR"}
+PENDING_STATES = {"PENDING", "EXPECTED"}
+PR_STATE_FIELDS = """number title url isDraft mergeable mergeStateStatus reviewDecision createdAt author { login }
+      files(first: 100) { nodes { path } }
+      commits(last: 1) { nodes { commit { committedDate statusCheckRollup { state contexts(first: 50) { nodes {
+        __typename ... on CheckRun { name conclusion status } ... on StatusContext { context state } } } } } } }"""
+RECENT_MERGED_FIELDS = """merged: pullRequests(states: MERGED, first: %d, orderBy: {field: UPDATED_AT, direction: DESC}) {
+      nodes { number title url mergedAt files(first: 100) { nodes { path } } } }""" % RECENT_MERGED_PER_REPO
 
 
 class GhFailure(Exception):
@@ -269,3 +285,115 @@ def lookup(run, keys: list[str], viewer: str | None, me: str = "Erik") -> tuple[
         item.evidence.append("looked up because another source links to it")
         items.append(item)
     return items, errors
+
+
+def check_results(rollup: dict | None) -> tuple[list[str], list[str], bool]:
+    contexts = ((rollup or {}).get("contexts") or {}).get("nodes") or []
+    failing, pending = [], []
+    for context in contexts:
+        if not context:
+            continue
+        if context.get("__typename") == "StatusContext":
+            name, state = context.get("context") or "status", context.get("state")
+            if state in FAILING_STATES:
+                failing.append(name)
+            elif state in PENDING_STATES:
+                pending.append(name)
+            continue
+        name = context.get("name") or "check"
+        if context.get("status") != "COMPLETED":
+            pending.append(name)
+        elif context.get("conclusion") in FAILING_CONCLUSIONS:
+            failing.append(name)
+    return failing, pending, bool(contexts)
+
+
+def pr_state(key: str, node: dict) -> PrState:
+    commits = (node.get("commits") or {}).get("nodes") or []
+    commit = ((commits[-1] or {}).get("commit") or {}) if commits else {}
+    failing, pending, has_checks = check_results(commit.get("statusCheckRollup"))
+    return PrState(
+        key=key,
+        title=node.get("title") or "",
+        url=node.get("url") or "",
+        is_draft=bool(node.get("isDraft")),
+        mergeable=node.get("mergeable") or "UNKNOWN",
+        merge_state=node.get("mergeStateStatus") or "UNKNOWN",
+        review_decision=node.get("reviewDecision"),
+        failing_checks=failing,
+        pending_checks=pending,
+        has_checks=has_checks,
+        files=[entry["path"] for entry in (node.get("files") or {}).get("nodes") or [] if entry and entry.get("path")],
+        bot=is_bot((node.get("author") or {}).get("login")),
+        created=parse_day(node.get("createdAt")),
+        last_commit=parse_day(commit.get("committedDate")),
+    )
+
+
+def merged_prs(repo: str, connection: dict | None) -> list[MergedPr]:
+    return [MergedPr(key=f"{repo}#{node['number']}".lower(), title=node.get("title") or "", url=node.get("url") or "",
+                     merged_on=parse_day(node.get("mergedAt")),
+                     files=[entry["path"] for entry in (node.get("files") or {}).get("nodes") or [] if entry and entry.get("path")])
+            for node in (connection or {}).get("nodes") or [] if node]
+
+
+def state_query(repos: dict[str, list[int]], with_merged: bool) -> tuple[str, dict[str, str]]:
+    blocks, aliases = [], {}
+    for position, (repo, numbers) in enumerate(repos.items()):
+        owner, name = repo.split("/", 1)
+        alias = f"r{position}"
+        aliases[alias] = repo
+        pulls = "\n    ".join(f"p{number}: pullRequest(number: {number}) {{ {PR_STATE_FIELDS} }}" for number in numbers)
+        merged = f"\n    {RECENT_MERGED_FIELDS}" if with_merged else ""
+        blocks.append(f"  {alias}: repository(owner: {json.dumps(owner)}, name: {json.dumps(name)}) {{\n    {pulls}{merged}\n  }}")
+    return "query {\n" + "\n".join(blocks) + "\n}", aliases
+
+
+def fetch_states(run, keys: list[str], with_merged: bool, states: dict, recent: dict, errors: list[str]) -> None:
+    for start in range(0, len(keys), PRS_PER_QUERY):
+        fetch_chunk(run, keys[start:start + PRS_PER_QUERY], with_merged, states, recent, errors)
+
+
+def fetch_chunk(run, chunk: list[str], with_merged: bool, states: dict, recent: dict, errors: list[str]) -> None:
+    repos: dict[str, list[int]] = {}
+    wanted = {}
+    for key in chunk:
+        owner, repo, number = REF_KEY.match(key).groups()
+        repos.setdefault(f"{owner}/{repo}", []).append(int(number))
+        wanted[(f"{owner}/{repo}", int(number))] = key
+    query, aliases = state_query(repos, with_merged)
+    try:
+        payload = json.loads(run(["api", "graphql", "-f", f"query={query}"]))
+    except (GhFailure, json.JSONDecodeError) as problem:
+        if len(chunk) > 1:
+            middle = len(chunk) // 2
+            fetch_chunk(run, chunk[:middle], with_merged, states, recent, errors)
+            fetch_chunk(run, chunk[middle:], with_merged, states, recent, errors)
+        else:
+            errors.append(f"PR state query failed for {chunk[0]}: {str(problem)[:300]}")
+        return
+    if payload.get("errors"):
+        errors.append(f"PR state query reported: {payload['errors'][0].get('message')}")
+    for alias, repo in aliases.items():
+        block = (payload.get("data") or {}).get(alias) or {}
+        for number in repos[repo]:
+            node = block.get(f"p{number}")
+            if node:
+                states[wanted[(repo, number)]] = pr_state(wanted[(repo, number)], node)
+        if with_merged and "merged" in block:
+            recent.setdefault(repo.lower(), []).extend(merged_prs(repo, block["merged"]))
+
+
+def pr_states(run, keys: list[str], sleep=time.sleep) -> tuple[dict[str, PrState], dict[str, list[MergedPr]], list[str]]:
+    keys = [key for key in keys if REF_KEY.match(key)]
+    states: dict[str, PrState] = {}
+    recent: dict[str, list[MergedPr]] = {}
+    errors: list[str] = []
+    if not keys:
+        return states, recent, errors
+    fetch_states(run, keys, True, states, recent, errors)
+    unknown = [key for key, state in states.items() if state.mergeable == "UNKNOWN" or state.merge_state == "UNKNOWN"]
+    if unknown:
+        sleep(UNKNOWN_RETRY_SECONDS)
+        fetch_states(run, unknown, False, states, recent, errors)
+    return states, recent, errors

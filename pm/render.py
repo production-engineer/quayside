@@ -1,5 +1,7 @@
 from html import escape
 
+from pm import verdicts
+
 SECTIONS = [
     ("next", "What to work on next"),
     ("stuck", "What is stuck"),
@@ -45,6 +47,14 @@ def change_lines(snapshot: dict, top: int) -> tuple[str, list[tuple[str, int, li
     return f"Compared with the run from {changes['previous_generated_on']} (changes since {changes['previous_generated_on']}).", groups
 
 
+def verdict_groups(snapshot: dict, top: int) -> list[tuple[str, int, str, list[tuple[dict, dict]]]]:
+    grouped = {verdict: [] for verdict in verdicts.ORDER}
+    for finding, item in entries(snapshot, "pr_verdicts", len(findings(snapshot, "pr_verdicts"))):
+        grouped.setdefault(item.get("verdict"), []).append((finding, item))
+    return [(verdicts.LABELS.get(verdict, verdict), len(members), verdicts.ACTIONS.get(verdict, ""), members[:top])
+            for verdict, members in grouped.items() if members]
+
+
 def markdown_title(item: dict) -> str:
     title = (item["title"] or item["id"]).replace("[", "\\[").replace("]", "\\]")
     link = safe_link(item)
@@ -65,6 +75,10 @@ def markdown(snapshot: dict, top: int = DEFAULT_TOP) -> str:
     for name, source in snapshot["sources"].items():
         lines.append(f"- {name}: {source['count']} items, {len(source['errors'])} errors")
         lines += [f"  - {error}" for error in source["errors"]]
+    lines += ["", "## PR verdicts", "", f"{len(findings(snapshot, 'pr_verdicts'))} open PRs classified."]
+    for label, count, action, members in verdict_groups(snapshot, top):
+        lines += ["", f"### {label} ({count})", "", f"Suggested action: {action}", ""]
+        lines += [f"- {markdown_title(item)} ({item['project']}): {item.get('verdict_evidence') or ''}" for _, item in members]
     for key, heading in SECTIONS:
         lines += ["", f"## {heading}", "", f"Top {top} of {counts[key]}.", ""]
         for position, (finding, item) in enumerate(entries(snapshot, key, top), start=1):
@@ -85,7 +99,7 @@ h1 { font-size: 20px; margin: 0 0 4px; }
 .summary { color: var(--muted); margin: 0 0 16px; }
 .board { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
 section h2 { font-size: 15px; margin: 0 0 8px; }
-.changes { margin: 0 0 16px; } .changes h3 { font-size: 13px; margin: 8px 0 2px; }
+.changes, .verdicts { margin: 16px 0; } .verdicts .board { display: block; } .changes h3 { font-size: 13px; margin: 8px 0 2px; }
 article { background: var(--card); border: 1px solid var(--rule); border-radius: 8px; padding: 10px 12px; margin: 0 0 8px; }
 article a { color: var(--accent); }
 .meta { color: var(--muted); font-size: 12px; }
@@ -112,6 +126,12 @@ def html(snapshot: dict, top: int = DEFAULT_TOP) -> str:
     summary, groups = change_lines(snapshot, top)
     change_html = "".join(f"<h3>{escape(label)} ({count})</h3><ul>" + "".join(f"<li>{escape(text)}</li>" for text in texts) + "</ul>"
                           for label, count, texts in groups if count)
+    verdict_html = "".join(
+        f"<h3>{escape(label)} ({count})</h3><p class=meta>Suggested action: {escape(action)}</p>"
+        + "".join(html_card({"score": finding["score"], "reasons": [item.get("verdict_evidence") or ""]}, item) for finding, item in members)
+        for label, count, action, members in verdict_groups(snapshot, top))
+    verdict_section = (f"<section class=verdicts><h2>PR verdicts ({len(findings(snapshot, 'pr_verdicts'))})</h2>"
+                       f"<div class=board>{verdict_html or '<p class=meta>No PRs classified.</p>'}</div></section>")
     changes = f"<section class=changes><h2>What changed since last run</h2><p class=meta>{escape(summary)}</p>{change_html}</section>"
     sources = "".join(
         f"<li>{escape(name)}: {source['count']} items"
@@ -123,6 +143,6 @@ def html(snapshot: dict, top: int = DEFAULT_TOP) -> str:
         f"<title>Project board {escape(snapshot['generated_on'])}</title><style>{STYLE}</style></head><body><main>"
         f"<h1>Project board</h1><p class=summary>{len(snapshot['items'])} work items, generated "
         f"{escape(snapshot['generated_on'])}. Read only; nothing here changes a source.</p>"
-        f"{changes}<div class=board>{''.join(columns)}</div>"
+        f"{changes}<div class=board>{''.join(columns)}</div>{verdict_section}"
         f"<details><summary>Sources</summary><ul>{sources}</ul></details></main></body></html>\n"
     )

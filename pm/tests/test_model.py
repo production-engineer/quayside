@@ -106,6 +106,8 @@ class SnapshotRoundTrip(unittest.TestCase):
             status_refs=["invented-owner/invented-repo#3"],
             done_refs=["invented-owner/invented-repo#5"],
             bot_authored=True,
+            verdict="MERGE_READY",
+            verdict_evidence="CI green, mergeable",
             evidence=["filename says in-progress"],
         )
         self.assertEqual(WorkItem.from_dict(item.to_dict()), item)

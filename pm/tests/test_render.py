@@ -15,8 +15,12 @@ def snapshot():
                  last_activity=TODAY, waiting_on_erik=["needs Erik's go"],
                  links=["https://example.com/invented", "javascript:alert(1)"]),
         WorkItem(source="tasks", id="tasks:1", title="Invented old task", status="open", last_activity=date(2026, 1, 1)),
+        WorkItem(source="github", id="github:o/r#7", title="Invented rebase me", kind="pr", status="review",
+                 last_activity=TODAY, verdict="NEEDS_REBASE", verdict_evidence="behind base, no conflicts",
+                 links=["https://github.com/o/r/pull/7"]),
     ]
-    results = [SourceResult("portals", items[:1], []), SourceResult("tasks", items[1:], ["invented warning"])]
+    results = [SourceResult("portals", items[:1], []), SourceResult("tasks", items[1:2], ["invented warning"]),
+               SourceResult("github", items[2:], [])]
     built = build_snapshot_dict(results, analyze.analyze(items, TODAY), TODAY)
     built["changes"] = {"previous_generated_on": "2026-09-25", "new": ["portal:x"], "closed": [], "gone": ["tasks:9"],
                         "newly_stuck": [], "status_flips": [{"id": "tasks:1", "from": "backlog", "to": "open"}],
@@ -40,6 +44,12 @@ class Markdown(unittest.TestCase):
 
     def test_unicode_survives(self):
         self.assertIn("café ✓", self.text)
+
+    def test_pr_verdicts_are_grouped_with_an_action(self):
+        self.assertIn("## PR verdicts", self.text)
+        self.assertIn("Needs rebase (1)", self.text)
+        self.assertIn("Rebase onto the base branch", self.text)
+        self.assertIn("Invented rebase me", self.text)
 
     def test_changes_list_titles_and_flips(self):
         self.assertIn("Invented vanished", self.text)
@@ -85,6 +95,10 @@ class Html(unittest.TestCase):
         for heading in ("What to work on next", "What is stuck", "Looks done but is not closed", "Waiting on Erik",
                         "Agent and bot PRs awaiting a verdict", "Archive candidates", "What changed since last run"):
             self.assertIn(heading, self.page)
+
+    def test_pr_verdicts_section(self):
+        self.assertIn("PR verdicts", self.page)
+        self.assertIn("Needs rebase (1)", self.page)
 
     def test_change_titles_are_escaped(self):
         self.assertNotIn("<b>task</b>", self.page)

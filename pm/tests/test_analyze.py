@@ -199,6 +199,38 @@ class AgentPrs(unittest.TestCase):
         self.assertEqual(ids(result["agent_prs"]), ["github:o/r#2", "github:o/r#1"])
 
 
+class MergeReady(unittest.TestCase):
+    def test_merge_ready_pr_tops_waiting_on_erik(self):
+        result = analyze.analyze([
+            item("decision", waiting_on_erik=["needs Erik's go"], critical_hints=["top of queue"]),
+            gh("o/r#1", kind="pr", status="review", agent_authored=True, verdict="MERGE_READY",
+               verdict_evidence="CI green, mergeable", last_activity=date(2026, 9, 10)),
+        ], TODAY)
+        self.assertEqual(ids(result["waiting_on_erik"])[0], "github:o/r#1")
+        self.assertIn("merge-ready: CI green, mergeable", reasons_of(result["waiting_on_erik"], "github:o/r#1")[0])
+        self.assertTrue(any("merge-ready" in reason for reason in reasons_of(result["next"], "github:o/r#1")))
+
+    def test_merge_ready_is_never_archived(self):
+        result = analyze.analyze([gh("o/r#1", kind="pr", status="review", verdict="MERGE_READY", verdict_evidence="x",
+                                     last_activity=date(2026, 1, 1))], TODAY)
+        self.assertEqual(result["archive"], [])
+        self.assertEqual(ids(result["waiting_on_erik"]), ["github:o/r#1"])
+
+    def test_other_verdicts_do_not_wait_on_erik(self):
+        result = analyze.analyze([gh("o/r#1", kind="pr", status="review", verdict="NEEDS_REBASE", verdict_evidence="behind")], TODAY)
+        self.assertEqual(result["waiting_on_erik"], [])
+
+    def test_pr_verdicts_group_by_verdict_order(self):
+        result = analyze.analyze([
+            gh("o/r#1", kind="pr", status="review", verdict="BROKEN", verdict_evidence="CI failing: Build"),
+            gh("o/r#2", kind="pr", status="review", verdict="MERGE_READY", verdict_evidence="CI green"),
+            gh("o/r#3", kind="pr", status="review", verdict="NEEDS_REBASE", verdict_evidence="behind", last_activity=date(2026, 1, 1)),
+            gh("o/r#4", kind="pr", status="done", verdict="MERGE_READY", verdict_evidence="x"),
+        ], TODAY)
+        self.assertEqual(ids(result["pr_verdicts"]), ["github:o/r#2", "github:o/r#3", "github:o/r#1"])
+        self.assertEqual(reasons_of(result["pr_verdicts"], "github:o/r#1"), ["BROKEN: CI failing: Build"])
+
+
 class ArchiveCandidates(unittest.TestCase):
     def test_items_idle_past_the_archive_age_leave_every_other_bucket(self):
         old = item("old", status="in_progress", last_activity=date(2026, 6, 28), waiting_on_erik=["x"])

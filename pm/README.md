@@ -87,6 +87,7 @@ Every remaining item gets a score:
 
 | Signal | Weight |
 |---|---|
+| Merge-ready PR | +6 |
 | Waiting on Erik | +5 |
 | Critical path hint in the text ("top of queue", "next thing to pick up", "critical path", "blocks the MVP") | +4 |
 | Priority critical, high, medium | +4, +3, +1 |
@@ -114,12 +115,31 @@ Only links in a status-bearing context count, so a passing mention in background
 
 ### What is waiting on Erik
 
+- A merge-ready PR.
 - A PR where review is requested from you.
 - Someone else's ready PR, not written by an agent or a bot, in a repo you own.
 - A tracker row whose task lead is Erik.
 - Text that says so: "waiting on Erik", "needs Erik's go", "ask Erik", "decide with Erik", "Erik's call", and similar phrasings in `pm/signals.py`. Approval already granted ("with Erik's go") does not count.
 
 Bots (Dependabot, Renovate, GitHub Actions) never produce waiting-on-Erik items.
+
+## PR verdicts
+
+Every open PR gets one verdict from `verdict_of` in `pm/verdicts.py`, a pure function over the PR's state and the repo's 30 most recently merged PRs. The rules are checked in this order:
+
+| Verdict | When | Suggested action |
+|---|---|---|
+| `DEPENDENCY_BUMP` | Author is a bot (Dependabot, Renovate) | Merge if green and minor; otherwise check the changelog |
+| `SUPERSEDED` | A PR opened later in the same repo, and merged after this one was opened, shares a similar title (word overlap at least 0.5) and at least half of this PR's non-trivial files; or it covers 90% of at least 3 non-trivial files with title overlap at least 0.3 | Close as superseded |
+| `STALE_DECISION` | Draft, changes requested, or branch protection waiting on a review | Decide: ship or close |
+| `BROKEN` | Any failing check (named in the evidence) | Fix or close |
+| `NEEDS_REBASE` | Conflicts (`DIRTY`) or behind the base branch (`BEHIND`) | Rebase, then re-check CI |
+| `UNKNOWN` | GitHub had not computed mergeability after one refetch, or checks are still running | Re-run later |
+| `MERGE_READY` | Mergeable, clean, CI green or no CI configured | Merge |
+
+Non-trivial files exclude lockfiles, `package.json`, `vercel.json`, `tsconfig.json`, READMEs, `CLAUDE.md`, and anything under `.github/`, because an earlier hand classification found that most file-overlap matches on those files were false positives. State comes from one aliased GraphQL query per 25 PRs (mergeable, merge state, check rollup, review decision, draft, changed files, recent merged PRs). A failing query is split in half and retried down to single PRs, and PRs whose mergeability is `UNKNOWN` are refetched once after 5 seconds.
+
+A merge-ready PR is the cheapest thing Erik can close, so it scores +6 in "next", tops "waiting on Erik", and is never archived.
 
 ## What changed since last run
 
@@ -134,6 +154,7 @@ This version makes no LLM call. The seam is the snapshot: `snapshot.json` (schem
 - Signals are regular expressions over prose. They miss unusual phrasings and occasionally match boilerplate; every signal shows its snippet so a wrong one is easy to spot.
 - `blocked_on` takes the first matching phrase in a whole portal, which can be historical context rather than a current blocker.
 - Status contexts are recognized by headings and line prefixes; a portal that writes status in free prose is not cross-checked.
+- Supersession is judged from file paths and titles, not diffs; a redo that renames files, or reuses files under a different title, is not caught.
 - Agent authorship is read from the PR body and head commit only; an agent PR with neither marker counts as human.
 - Short refs like `repo#12` resolve only when exactly one owner has a repo by that name; bare `#12` and `PR #73` are ignored.
 - GitHub search returns at most 1000 results per query; the report says when a query was truncated.

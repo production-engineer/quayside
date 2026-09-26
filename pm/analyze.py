@@ -2,8 +2,10 @@ import re
 from dataclasses import asdict, dataclass, replace
 from datetime import date
 
+from pm import verdicts
 from pm.model import WorkItem, idle_days
 
+MERGE_READY_WEIGHT = 6
 WAITING_ON_ERIK_WEIGHT = 5
 CRITICAL_HINT_WEIGHT = 4
 PRIORITY_WEIGHTS = {"critical": 4, "high": 3, "medium": 1, "low": 0}
@@ -88,6 +90,8 @@ def next_score(item: WorkItem, today: date) -> tuple[int, list[str]]:
         score += weight
         reasons.append(f"{weight:+d} {reason}")
 
+    if item.verdict == verdicts.MERGE_READY:
+        add(MERGE_READY_WEIGHT, f"merge-ready: {item.verdict_evidence}")
     if item.waiting_on_erik:
         add(WAITING_ON_ERIK_WEIGHT, f"waiting on Erik: {item.waiting_on_erik[0]}")
     if item.critical_hints:
@@ -147,10 +151,14 @@ def analyze(items: list[WorkItem], today: date, archive_days: int = ARCHIVE_DAYS
             for key in item.done_refs:
                 done_listers.setdefault(key, []).append(item.id)
     active = [item for item in items if item.status != "done"]
-    looks_done, ranked, stuck, waiting, agent_prs, archive = [], [], [], [], [], []
+    looks_done, ranked, stuck, waiting, agent_prs, archive, pr_verdicts = [], [], [], [], [], [], []
     for item in active:
         idle = idle_days(item, today)
-        if idle is not None and idle >= archive_days:
+        merge_ready = item.verdict == verdicts.MERGE_READY
+        if item.verdict:
+            pr_verdicts.append((verdicts.ORDER.index(item.verdict) if item.verdict in verdicts.ORDER else len(verdicts.ORDER),
+                                -(idle or 0), item.id, Finding(item.id, idle or 0, [f"{item.verdict}: {item.verdict_evidence}"])))
+        if idle is not None and idle >= archive_days and not merge_ready:
             archive.append(Finding(item.id, idle, [f"{item.status}, idle {idle} days, past the {archive_days}-day archive age; report only, nothing is closed"]))
             continue
         done_reasons = looks_done_reasons(item, index, closers, done_linkers, done_listers)
@@ -159,8 +167,9 @@ def analyze(items: list[WorkItem], today: date, archive_days: int = ARCHIVE_DAYS
             continue
         score, reasons = next_score(item, today)
         ranked.append(Finding(item.id, score, reasons))
-        if item.waiting_on_erik:
-            waiting.append(Finding(item.id, score, list(item.waiting_on_erik)))
+        if merge_ready or item.waiting_on_erik:
+            wait_reasons = ([f"merge-ready: {item.verdict_evidence}"] if merge_ready else []) + list(item.waiting_on_erik)
+            waiting.append(Finding(item.id, score, wait_reasons))
         if is_stale_automated_pr(item, idle):
             state = "ready for review" if item.status == "review" else "in draft"
             author = "agent-authored PR" if item.agent_authored else "bot PR"
@@ -178,4 +187,5 @@ def analyze(items: list[WorkItem], today: date, archive_days: int = ARCHIVE_DAYS
         "waiting_on_erik": sorted(waiting, key=lambda finding: (-finding.score, -idle_of[finding.id], finding.id)),
         "agent_prs": sorted(agent_prs, key=lambda finding: (-finding.score, finding.id)),
         "archive": sorted(archive, key=lambda finding: (-finding.score, finding.id)),
+        "pr_verdicts": [entry[-1] for entry in sorted(pr_verdicts, key=lambda entry: entry[:3])],
     }

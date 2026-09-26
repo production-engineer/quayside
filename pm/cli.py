@@ -4,7 +4,9 @@ import sys
 from datetime import date, timedelta
 from pathlib import Path
 
-from pm import analyze, memory, render
+from dataclasses import replace
+
+from pm import analyze, memory, render, verdicts
 from pm.model import SourceResult, WorkItem, parse_day
 from pm.sources import github, portals, tasks, tracker
 
@@ -78,6 +80,7 @@ def collect_sources(options, gh) -> list[SourceResult]:
     results.append(hub)
     for result in results:
         result.items = analyze.qualify_refs(result.items, hub.repos)
+    results.append(classify_prs(gh, hub))
     excluded = {repo.lower() for repo in options.exclude_repo or DEFAULT_EXCLUDED_REPOS}
     missing = [ref for ref in analyze.unresolved_refs([item for result in results for item in result.items])
                if ref.split("#", 1)[0] not in excluded]
@@ -87,6 +90,23 @@ def collect_sources(options, gh) -> list[SourceResult]:
         if len(missing) > MAX_LOOKUPS:
             results[-1].errors.append(f"{len(missing) - MAX_LOOKUPS} linked refs were not looked up (cap {MAX_LOOKUPS})")
     return results
+
+
+def classify_prs(gh, hub: github.GithubResult) -> SourceResult:
+    open_prs = [item.github_key for item in hub.items if item.kind == "pr" and item.status in ("review", "in_progress")]
+    states, recent, errors = github.pr_states(gh, open_prs)
+    classified = []
+    for position, item in enumerate(hub.items):
+        state = states.get(item.github_key or "")
+        if state is None:
+            continue
+        verdict, evidence = verdicts.verdict_of(state, recent.get(item.project.lower(), []))
+        hub.items[position] = replace(item, verdict=verdict, verdict_evidence=evidence)
+        classified.append(item.id)
+    missing = len(open_prs) - len(classified)
+    if missing:
+        errors.append(f"{missing} open PRs got no verdict because their state could not be read")
+    return SourceResult("pr-verdicts", [], errors)
 
 
 def inside_repository(path: Path) -> bool:

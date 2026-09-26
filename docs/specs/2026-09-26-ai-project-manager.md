@@ -125,7 +125,7 @@ function attribute(item):
 
 | Source | Yields | Auth (v1) | Freshness target | Tenants |
 |---|---|---|---|---|
-| GitHub | PRs (state, merge commit, base, reviews), issues (state, assignees, labels), commits on default branches, deployment statuses | GitHub App per org, read only: metadata, contents, issues, pull requests, deployments. `pm-local` PM0: `gh` login | 15 min poll; webhooks are an extension | all |
+| GitHub | PRs (state, merge commit, base, reviews), issues (state, assignees, labels), commits on default branches, deployment statuses | GitHub App per org, read only: metadata, contents, issues, pull requests, deployments. `pm-local` PM0: `gh` login | 15 min poll through batched GraphQL queries (25 items per query, a failing batch split in half and retried); webhooks are an extension | all |
 | Gmail | Thread metadata (participants, subject, dates, labels, thread id) for all threads; body summaries only for threads linked to a project (Section 5.2) | OAuth per mailbox, `gmail.readonly` only; never `gmail.send` | 30 min, using the history id | rh, bc |
 | Calendar | Events: title, time, attendees, conference link, attached notes doc | OAuth, `calendar.readonly` | 60 min | rh, bc |
 | Drive and Sheets | Listed files only: the RH tracker, the opportunity sheet, the requirements sheet; row level diffs between reads | OAuth, `drive.readonly`, `spreadsheets.readonly`, restricted to a file id allowlist | 60 min, using the Drive changes feed | rh, bc |
@@ -265,8 +265,9 @@ A claim about a task, project or claim, backed by one signal.
 - `project_id` (uuid, nullable), `task_id` (uuid, nullable), `claim_id` (uuid, nullable, references `claims`); at least one of the three is set.
 - `kind` (text, check in `activity`, `supports_done`, `contradicts_done`, `blocker`, `commitment`, `decision`)
 - `excerpt` (text, at most 280 characters, verbatim from the source)
-- `linked_by` (text, check in `explicit_ref`, `exact_name`, `rule`, `model`); `model` links are shown with a marker and never count toward promotion floors on their own.
+- `linked_by` (text, check in `explicit_ref`, `exact_name`, `rule`, `model`); `model` links are shown with a marker and never count toward promotion floors on their own. Cross-source links (a portal to a ticket to a tracker row) are `explicit_ref` only; name matching never joins claims across sources, because nothing shares an identity across them (10.1).
 - `confidence` (numeric 0 to 1, nullable; null for `explicit_ref` and `rule`)
+- `strength` (text, nullable, check in `strong`, `weak`): set only on `supports_done` rows (7.3).
 
 ### 7.3 `claims`
 
@@ -274,14 +275,23 @@ Someone has said a piece of work is theirs, or that it is done. A claim can poin
 
 - `id` (uuid), `task_id` (uuid, nullable), `external_ref` (text, nullable, unique where not null): `Remote-Hands-LLC/remote-hands-ak#161`, `Keep:portal-2026-09-14-quayside-schema`, `sheet:<file id>:<row>`.
 - `kind` (text, check in `in_progress`, `done`)
+- `author_kind` (text, not null, check in `human`, `agent`, `bot`): `agent` when the item or its head commit carries the Claude Code markers ("Generated with Claude Code", "Co-Authored-By: Claude"), `bot` for app accounts such as Dependabot. A first class field because the prototype found most open PRs were agent authored (10.1).
+- `waits_on` (text, nullable, same reference allowlist as `claimant`): set only when a decision only that person can give is pending (review requested, a line naming them, a merge-ready PR in a repo they own). Authorship under Erik's identity never sets it.
+- `links` (text[], default `{}`): external refs parsed only from status-bearing lines (a Tracked or Status line, a checklist, a banner, a status or done section). The only way two claims are treated as the same work.
 - `claimant` (text): exactly one of `gh:<login>`, `session:<uuid>` or `contact:<uuid>` (a reference to `contacts`), enforced by a check constraint matching `^(gh:[A-Za-z0-9-]{1,39}|session:[0-9a-f-]{36}|contact:[0-9a-f-]{36})$`. Never a raw email address or phone number, because `claims` is audited (7.6) and the audit rule of P4.11 keeps contact details out of `audit_log`.
 - `claimed_at` (timestamptz), `last_activity_at` (timestamptz, nullable): the newest `activity` evidence.
-- `state` (text, check in `live`, `stale`, `done_verified`, `done_without_evidence`, `closed`)
+- `state` (text, check in `live`, `stale`, `done_verified`, `done_without_evidence`, `done_unlinked`, `closed`)
 - `verification` (jsonb, default `{}`): which postcondition was checked, when, and what it found.
 
 The `pm/` prototype's `WorkItem` is the local, unstored form of a claim; field names converge when PM1 writes this table.
 
-Rules: an `in_progress` claim becomes `stale` when `now - coalesce(last_activity_at, claimed_at) > QUAYSIDE_PM_STALE_DAYS`. A `done` claim is `done_verified` only when its postcondition holds: for a PR, merged and the merge commit an ancestor of the default branch, and for a deploying repo also present in the production deployment (`/api/version` in the portal); for a portal, a merged commit or a closed ticket it cites; for a task, at least one `supports_done` evidence and no newer `contradicts_done`. Otherwise it is `done_without_evidence`.
+Done evidence is structured, never prose. A `supports_done` evidence row must come from a GitHub merge or close event, a closed ticket, or a deployment status, reached through an explicit link. Words like "done" or "shipped" in a tracker Status Update, an email, or a model summary produce at most `activity` evidence. Each `supports_done` row carries `strength`: `strong` when the linked item closed after the claim was created, `weak` when it closed within one day of it (it may be background). A link that closed more than a day before the claim existed is ignored. Only `strong` evidence can make a claim `done_verified`; `weak` evidence renders as a prompt to check.
+
+Rules: an `in_progress` claim becomes `stale` when `now - coalesce(last_activity_at, claimed_at) > QUAYSIDE_PM_STALE_DAYS`. A `done` claim is `done_verified` only when its postcondition holds: for a PR, merged and the merge commit an ancestor of the default branch, and for a deploying repo also present in the production deployment (`/api/version` in the portal); for a portal, a merged commit or a closed ticket it cites; for a task, at least one `strong` `supports_done` evidence and no newer `contradicts_done`. Otherwise it is `done_without_evidence`. A done claim with no followable link at all is reported separately as `done_unlinked`, because its evidence may exist where the check cannot reach (repo contents, Keep git history).
+
+### 7.3.1 PR verdicts
+
+Every open PR claim carries one verdict, computed by a pure function from GitHub state: `merge_ready`, `needs_rebase`, `superseded`, `stale_decision`, `broken_ci`, `dependency_bump`, `unknown`. Precedence: a draft is `stale_decision` before CI or conflicts count. Supersession is conservative: lockfiles, `package.json`, `vercel.json`, READMEs and `.github/` never count as file overlap; titles must overlap (word overlap at least 0.5 with half the non-trivial files shared, or at least 0.3 with 90 percent of 3 or more files shared); the superseding PR must be merged and newer. `merge_ready` is mechanical (mergeable, clean, CI green or absent) and says nothing about whether the change is still wanted. Stored as `verification.pr_verdict` on the claim; these rules and thresholds are the prototype's (PR #20), carried over as measured.
 
 ### 7.4 `proposals` and `action_policies`
 
@@ -485,11 +495,25 @@ All metrics are computed from the tenant's own tables and source history, weekly
 | Queue age | Median and max hours proposals wait | `proposals` |
 | Connector health | Share of hours each connector is inside its freshness target | `connectors`, `agent_runs` |
 | Cost per closed item | Spend over items closed | `agent_runs`, `claims` |
+| Finding precision | Erik's true marks over flagged items, per finding class and strength | report marks, proposal decisions |
 | Injection canaries | Canary fixtures that produced a gated proposal: must be zero | test suite |
 
-Working thresholds for v1, invented for this draft and for Erik to set: false done rate falling below its baseline within 4 weeks of PM1; stale claim precision at or above 70 percent in PM0; items closed per week at or above baseline with cost per closed item under 2 dollars.
+Precision is the target, measured per finding class and per strength, because recall is cheap and a noisy list gets ignored. Measured baselines from the prototype (10.1): strong "looks done" 2 of 4 truly done, weak 2 of 15, PR verdict agreement 86 of 92. Weak findings are scored as prompts (the share that led Erik to act), not as claims. Working thresholds for v1, invented for this draft and for Erik to set: strong finding precision at or above 75 percent by the end of PM1, reached through structured links rather than looser rules; false done rate falling below its baseline within 4 weeks of PM1; stale claim precision set from PM0's first labeled week; items closed per week at or above baseline with cost per closed item under 2 dollars.
 
 The workspace testing rule applies to every detector here: each staleness and done rule ships with a known-bad fixture it must flag, and the test is run once with the rule broken to watch it fail.
+
+### 10.1 What the PM0 prototype measured
+
+Source: production-engineer/quayside PR #20 (the `pm/` prototype, four rounds against live sources on 2026-09-26), plus one figure relayed by the coordinating session. Each lesson and the design choice it changed:
+
+1. Scale: 1,975 items across 21 Keep portals, 11 quayside tasks, GitHub under 6 owners and 496 RH tracker rows. Reading GitHub needed GraphQL with aliased queries, because the REST search limit ran out within seconds. Changed: the GitHub connector in 5.1 uses batched GraphQL queries and splits and retries a failing batch (the first live run hit an HTTP 502).
+2. Authorship: agent-authored PRs dominate. The coordinating session reports that 101 of 121 open PRs were agent authored, a figure from the prototype's runs that the PR #20 body does not state itself. PR #20 shows the effect: "waiting on Erik" fell from 121 to 60 once authorship under Erik's identity stopped counting. Changed: `author_kind` and `waits_on` are first class fields on `claims` (7.3).
+3. Prose is not evidence. Regex done words in tracker Status Update text produced 90 false "says done" hits ("1 of 7 done", "half shipped"). Changed: done evidence must be a structured link to a merged PR, a closed ticket or a deploy (7.3), and tracker prose yields activity only.
+4. No shared identity. A portal, a ticket and a tracker row share no key. Cross-source checks worked only through explicit links, and 2 of the 6 rows a hand audit proved done had no followable link (one linked only a repo root; one relied on Keep git history). Changed: cross-source joins are `explicit_ref` only (7.2), and `done_unlinked` is a separate state, not a failure (7.3).
+5. Strength matters. For "looks done but not closed", strong findings were truly done 2 of 4 times and weak ones 2 of 15. Changed: evidence carries `strength`; only strong evidence verifies; weak findings are prompts; the evaluation targets precision per class (Section 10).
+6. PR verdicts: a pure classifier agreed with a hand pass on 86 of 92 PRs, and four of the six differences were one precedence choice (drafts first). Conservative supersession mattered: 3 of 5 naive file-overlap hits were false, caused by lockfiles and config files. Changed: 7.3.1 adopts the verdict set, precedence and supersession rules.
+7. Boundary gap: the prototype writes one combined report, snapshot and board across all sources. That conflicts with rule 4.2(4), so PM0 acceptance now requires per-tenant outputs (criterion 10, D15).
+8. Minimization held: the prototype scans ticket bodies and drops them, and it reads the tracker through a CSV export saved outside the repo, with no Google calls from the tool. Both match 5.2.
 
 ## 11. Slices
 
@@ -497,7 +521,7 @@ The parent's Slices 0 to 8 stand. The PM track runs beside them; each PM slice n
 
 ### PM0: stale claims and false done, read only, local
 
-- Scope: `pm-local` on the M5, one process per tenant, sources Keep portals, Claude Code session metadata and GitHub through `gh`. No model calls, no network writes, no hosted store. Runs daily at 07:30 Alaska time by launchd and on demand. Output: one report file per tenant under `~/.quayside/<tenant>/report-YYYY-MM-DD.md` plus the 8 week baseline. Aligns with the Python `pm/` prototype on `pm-prototype` (in progress when this was written): its `WorkItem` and `idle_days` are the local form of `claims` and the staleness rule, and its readers for a local CSV export of the RH tracker and for `quayside_personal/TASKS.md` belong in PM0 as local file sources, attributed `rh` and `personal`.
+- Scope: `pm-local` on the M5, one process per tenant, sources Keep portals, `quayside_personal/TASKS.md`, GitHub through `gh` (GraphQL, the frozen `beadedcloud/beadedcloud.com` excluded by default), a local CSV export of the RH tracker, and Claude Code session metadata (not yet in the prototype). No model calls, no network writes, no hosted store. Runs daily at 07:30 Alaska time by launchd and on demand. Output: one report file per tenant under `~/.quayside/<tenant>/report-YYYY-MM-DD.md` plus the 8 week baseline. Aligns with the Python `pm/` prototype on `pm-prototype` (in progress when this was written): its `WorkItem` and `idle_days` are the local form of `claims` and the staleness rule, and its readers for a local CSV export of the RH tracker and for `quayside_personal/TASKS.md` belong in PM0 as local file sources, attributed `rh` and `personal`.
 - Depends on: nothing. Feeds: the rules and fixtures every later slice reuses.
 - Acceptance criteria:
   1. A run completes in under 2 minutes and makes no write outside `~/.quayside/`, verified by a filesystem watch and by `GH_DEBUG=api` output showing only GET requests.
@@ -507,7 +531,10 @@ The parent's Slices 0 to 8 stand. The PM track runs beside them; each PM slice n
   5. A known-bad fixture (an invented portal left `-in-progress` with no activity for 10 days, labeled invented in the fixture) is flagged, and the test fails when the staleness rule is disabled.
   6. A PR claimed done that is merged but not deployed is flagged `done_without_evidence` (fixture).
   7. The report prints the 8 week baseline for items closed per week and false done rate.
-- Erik validates by reading the `rh` report, marking each flagged item true or false in the report file, and saying whether at least one item surprised him. Pass: 70 percent of stale flags true (a proposed bar, invented for this draft, per Section 10).
+  8. Agent and bot items are a separate bucket and never appear in "waiting on Erik" by authorship alone (fixture: an agent PR under Erik's login with no review request).
+  9. Tracker prose never produces done evidence (fixture: a Status Update reading "1 of 7 done").
+  10. Outputs, including the run memory snapshot, are split per tenant; no file holds two tenants' items (D15).
+- Erik validates by reading the `rh` report, marking each flagged item true or false in the report file, and saying whether at least one item surprised him. Pass has two parts. First, precision is recorded per finding class from his marks. Second, strong "looks done but not closed" findings stay at or above the prototype's measured 2 of 4, and PR verdicts agree with his marks on at least 90 percent (the prototype measured 86 of 92 against a hand pass). Stale claim precision has no measured baseline yet, so PM0 sets it rather than meets it; the earlier invented 70 percent bar is withdrawn.
 
 ### PM1: the `rh` tenant sees (signals and evidence in the portal)
 
@@ -575,6 +602,7 @@ Each was a real question; Erik was away and asked not to be asked. The chosen op
 | D12 | Requirement row IDs | Provisional from 236, not written to the sheet | Continue from 233 as memory last recorded | The sheet was unreadable this session and rows 233 to 235 may have been used since; provisional IDs avoid a collision |
 | D13 | Is the sheet mirror of P10 automatic? | No; each mirror write is an approved proposal in v1 | Promote `sheet.mirror_write` to auto | Sheets are where staff read the truth; a wrong automatic write there is the costliest silent error the agent could make |
 | D14 | Agent runtime for the first model-using slice (PM2): Hermes or the Claude API? | Claude API from the portal behind a provider-neutral interface; Hermes on `rh-orchestrator` added in PM2h for the Discord face, long running connectors and a local-inference triage trial, `rh` only | Hermes as the runtime for the whole loop now; the Claude Agent SDK; Hermes on `rhmain` | Section 8.1: the API gives the tool-less triage, strict schemas and cached prompts the safety design rests on, and is reachable today; `rh-orchestrator` is not reachable by SSH yet and `rhmain` carries unaudited patches and inline secrets; Hermes is Remote Hands only, so it can never serve `bc` or `personal`; the interface keeps the switch to one variable per route |
+| D15 | May the PM0 prototype keep one combined report and snapshot across tenants on Erik's machine? | No; PM0 acceptance requires per-tenant files, and the combined view is rendered at read time and never written | Accept the combined files as the composed view; relax rule 4.2(4) for Erik's machine | A combined snapshot is a stored cross-org dataset, which is exactly what the org boundary forbids, and splitting is a local change to the prototype |
 
 ## 14. Proposed Requirement Rows (provisional, not written to the sheet)
 
@@ -597,6 +625,8 @@ The register could not be read in this session: the Google Workspace connection 
 | 248 (provisional) | Weekly scorecard | Items closed, false done rate, stale caught, precision, cost per closed item, against an 8 week baseline | Insight | v1 | Section 10 | Keep notes | "There is a constant lag the software has behind reality." |
 | 249 (provisional) | Many indexes over sources | Evidence indexed by project, task, claim and person so a task can reach all sources | Agent | v2 | Section 7.2 indexes; later slices | quayside_personal TASKS.md task 7 | "Seems like there should be many "indexes" of information so it makes it easier to find." |
 | 250 (provisional) | Provider neutral model interface | Triage, planning and chat go through one interface; providers `anthropic` and `hermes`; a provider that cannot run tool-less triage is refused | Agent | v1 | Section 8.2; `ProviderNotQuarantined` test | Erik, 2026-09-26 | "I would like to use our Hermes more." |
+| 251 (provisional) | Authorship is a field | Every claim records human, agent or bot authorship; "waiting on Erik" means a decision only he can give, never authorship under his login | Agent | v1 | PM0 criterion 8 | PR #20, round two | "the AI project manager that has full visibility and actually gets projects done" |
+| 252 (provisional) | Done evidence is structured and graded | Done needs an explicit link to a merge, closed ticket or deploy; strong evidence verifies, weak evidence prompts; prose never counts | Agent | v1 | Section 7.3; PM0 criterion 9 | PR #20, round four | "actually gets projects done" |
 
 ## 15. Test and Validation Matrix
 
@@ -605,6 +635,8 @@ Core conformance (pure functions, shared fixtures in `pm/fixtures/`, run in both
 - Attribution: one fixture per rule in 4.3, plus a root `~/repos` session (personal) and an unattributable item (`AttributionError`).
 - Staleness: `QUAYSIDE_PM_STALE_DAYS` boundary at 6, 7 and 8 days; missing `last_activity_at` falls back to `claimed_at`; future timestamps rejected.
 - Done postconditions: merged and deployed (verified); merged not deployed (without evidence); closed without merge (without evidence); portal `-done` citing a merged PR (verified).
+- PR verdicts (7.3.1): a draft with failing CI is `stale_decision`; a PR sharing only a lockfile and `package.json` with a merged PR is not `superseded`; an older merged PR never supersedes a newer one; titles with word overlap below 0.3 never supersede.
+- Done strength: a link closed after the claim is `strong`, within one day before it `weak`, more than a day before it ignored; the boundary is tested at the exact instant.
 - Policy: every kind in 6.2 gets its gate; an unknown kind is `ForbiddenAction`; a forbidden kind cannot be promoted.
 - Proposals: missing evidence (`EvidenceRequired`), payload failing its schema (`PayloadInvalid`), `PayloadChanged` after approval, expiry at TTL, queue cap at 25.
 - Content caps: 500 character summary and 280 character excerpt truncate at a character boundary, including multibyte text.

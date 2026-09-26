@@ -5,7 +5,11 @@ SECTIONS = [
     ("stuck", "What is stuck"),
     ("looks_done", "Looks done but is not closed"),
     ("waiting_on_erik", "Waiting on Erik"),
+    ("agent_prs", "Agent and bot PRs awaiting a verdict"),
+    ("archive", "Archive candidates"),
 ]
+CHANGE_LABELS = [("new", "New"), ("closed", "Closed"), ("gone", "Gone from the sources"), ("newly_stuck", "Newly stuck"),
+                 ("status_flips", "Status flips")]
 DEFAULT_TOP = 15
 
 
@@ -13,9 +17,32 @@ def safe_link(item: dict) -> str | None:
     return next((link for link in item.get("links", []) if link.startswith(("https://", "http://"))), None)
 
 
+def findings(snapshot: dict, section: str) -> list[dict]:
+    return snapshot["findings"].get(section, [])
+
+
 def entries(snapshot: dict, section: str, top: int) -> list[tuple[dict, dict]]:
     items = {item["id"]: item for item in snapshot["items"]}
-    return [(finding, items[finding["id"]]) for finding in snapshot["findings"][section][:top] if finding["id"] in items]
+    return [(finding, items[finding["id"]]) for finding in findings(snapshot, section)[:top] if finding["id"] in items]
+
+
+def change_lines(snapshot: dict, top: int) -> tuple[str, list[tuple[str, int, list[str]]]]:
+    changes = snapshot.get("changes")
+    if not changes:
+        return "Run memory was off for this snapshot.", []
+    if not changes.get("previous_generated_on"):
+        return "First run: nothing to compare yet.", []
+    titles = {item["id"]: item["title"] for item in snapshot["items"]}
+    titles.update(changes.get("titles", {}))
+    groups = []
+    for key, label in CHANGE_LABELS:
+        values = changes.get(key, [])
+        if key == "status_flips":
+            lines = [f"{titles.get(flip['id'], flip['id'])}: {flip['from']} to {flip['to']}" for flip in values[:top]]
+        else:
+            lines = [titles.get(value, value) for value in values[:top]]
+        groups.append((label, len(values), lines))
+    return f"Compared with the run from {changes['previous_generated_on']} (changes since {changes['previous_generated_on']}).", groups
 
 
 def markdown_title(item: dict) -> str:
@@ -26,9 +53,14 @@ def markdown_title(item: dict) -> str:
 
 def markdown(snapshot: dict, top: int = DEFAULT_TOP) -> str:
     lines = [f"# Project manager report, {snapshot['generated_on']}", ""]
-    counts = {key: len(snapshot["findings"][key]) for key, _ in SECTIONS}
+    counts = {key: len(findings(snapshot, key)) for key, _ in SECTIONS}
     lines.append(f"{len(snapshot['items'])} work items: {counts['next']} ranked, {counts['stuck']} stuck, "
-                 f"{counts['looks_done']} look done, {counts['waiting_on_erik']} waiting on Erik.")
+                 f"{counts['looks_done']} look done, {counts['waiting_on_erik']} waiting on Erik, "
+                 f"{counts['agent_prs']} agent or bot PRs awaiting a verdict, {counts['archive']} archive candidates.")
+    summary, groups = change_lines(snapshot, top)
+    lines += ["", "## What changed since last run", "", summary]
+    for label, count, entries_text in groups:
+        lines += ["", f"{label} ({count}):"] + [f"- {text}" for text in entries_text]
     lines += ["", "## Sources", ""]
     for name, source in snapshot["sources"].items():
         lines.append(f"- {name}: {source['count']} items, {len(source['errors'])} errors")
@@ -53,6 +85,7 @@ h1 { font-size: 20px; margin: 0 0 4px; }
 .summary { color: var(--muted); margin: 0 0 16px; }
 .board { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
 section h2 { font-size: 15px; margin: 0 0 8px; }
+.changes { margin: 0 0 16px; } .changes h3 { font-size: 13px; margin: 8px 0 2px; }
 article { background: var(--card); border: 1px solid var(--rule); border-radius: 8px; padding: 10px 12px; margin: 0 0 8px; }
 article a { color: var(--accent); }
 .meta { color: var(--muted); font-size: 12px; }
@@ -74,8 +107,12 @@ def html(snapshot: dict, top: int = DEFAULT_TOP) -> str:
     columns = []
     for key, heading in SECTIONS:
         cards = "".join(html_card(finding, item) for finding, item in entries(snapshot, key, top))
-        total = len(snapshot["findings"][key])
+        total = len(findings(snapshot, key))
         columns.append(f"<section><h2>{escape(heading)} ({total})</h2>{cards or '<p class=meta>Nothing here.</p>'}</section>")
+    summary, groups = change_lines(snapshot, top)
+    change_html = "".join(f"<h3>{escape(label)} ({count})</h3><ul>" + "".join(f"<li>{escape(text)}</li>" for text in texts) + "</ul>"
+                          for label, count, texts in groups if count)
+    changes = f"<section class=changes><h2>What changed since last run</h2><p class=meta>{escape(summary)}</p>{change_html}</section>"
     sources = "".join(
         f"<li>{escape(name)}: {source['count']} items"
         + "".join(f"<br>{escape(error)}" for error in source["errors"]) + "</li>"
@@ -86,6 +123,6 @@ def html(snapshot: dict, top: int = DEFAULT_TOP) -> str:
         f"<title>Project board {escape(snapshot['generated_on'])}</title><style>{STYLE}</style></head><body><main>"
         f"<h1>Project board</h1><p class=summary>{len(snapshot['items'])} work items, generated "
         f"{escape(snapshot['generated_on'])}. Read only; nothing here changes a source.</p>"
-        f"<div class=board>{''.join(columns)}</div>"
+        f"{changes}<div class=board>{''.join(columns)}</div>"
         f"<details><summary>Sources</summary><ul>{sources}</ul></details></main></body></html>\n"
     )

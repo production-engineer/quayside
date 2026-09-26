@@ -15,6 +15,7 @@ CLAIMED_PENALTY = -3
 PARKED_PENALTY = -2
 CLAIMED_IDLE_DAYS = 7
 OPEN_IDLE_DAYS = 21
+ARCHIVE_DAYS = 90
 CLAIMED_STATUSES = {"in_progress", "review"}
 SHORT_REF = re.compile(r"^([\w.-]+)#(\d+)$")
 
@@ -36,32 +37,37 @@ def github_index(items: list[WorkItem]) -> dict[str, WorkItem]:
 def qualify_refs(items: list[WorkItem], repos: dict[str, list[str]]) -> list[WorkItem]:
     qualified = []
     for item in items:
-        refs = []
-        for ref in item.refs:
-            short = SHORT_REF.match(ref)
-            if short is None:
-                refs.append(ref)
-                continue
-            owners = repos.get(short.group(1), [])
-            if len(owners) == 1:
-                refs.append(f"{owners[0]}#{short.group(2)}")
-        qualified.append(replace(item, refs=sorted(set(refs))))
+        qualified.append(replace(item, refs=qualify(item.refs, repos), status_refs=qualify(item.status_refs, repos),
+                                 done_refs=qualify(item.done_refs, repos)))
     return qualified
+
+
+def qualify(refs: list[str], repos: dict[str, list[str]]) -> list[str]:
+    qualified = set()
+    for ref in refs:
+        short = SHORT_REF.match(ref)
+        if short is None:
+            qualified.add(ref)
+            continue
+        owners = repos.get(short.group(1), [])
+        if len(owners) == 1:
+            qualified.add(f"{owners[0]}#{short.group(2)}")
+    return sorted(qualified)
 
 
 def unresolved_refs(items: list[WorkItem]) -> list[str]:
     known = github_index(items)
-    wanted = {ref for item in items if item.source != "github" for ref in item.refs if "/" in ref}
+    wanted = {ref for item in items if item.source != "github" for ref in [*item.status_refs, *item.done_refs] if "/" in ref}
     return sorted(wanted - set(known))
 
 
 def looks_done_reasons(item: WorkItem, index: dict[str, WorkItem], closers: dict[str, list[str]],
-                       done_linkers: dict[str, list[str]]) -> list[str]:
+                       done_linkers: dict[str, list[str]], done_listers: dict[str, list[str]]) -> list[str]:
     if item.status == "done":
         return []
     reasons = [f"says done: {hint}" for hint in item.done_hints]
     if item.source != "github":
-        linked = [index[ref] for ref in item.refs if ref in index]
+        linked = [index[ref] for ref in item.status_refs if ref in index]
         if linked and all(other.status == "done" for other in linked):
             names = ", ".join(other.github_key for other in linked)
             reasons.append(f"every linked GitHub item it names is closed or merged ({names})")
@@ -69,6 +75,8 @@ def looks_done_reasons(item: WorkItem, index: dict[str, WorkItem], closers: dict
         reasons.append(f"merged PR {closer} says it closes this")
     for linker in done_linkers.get(item.github_key or "", []):
         reasons.append(f"{linker} is done and links to this open item")
+    for lister in done_listers.get(item.github_key or "", []):
+        reasons.append(f"{lister} lists this as done but it is still open")
     return reasons
 
 
@@ -118,22 +126,34 @@ def stuck_reasons(item: WorkItem, today: date) -> list[str]:
     return []
 
 
-def analyze(items: list[WorkItem], today: date) -> dict[str, list[Finding]]:
+def is_stale_automated_pr(item: WorkItem, idle: int | None) -> bool:
+    return (item.kind == "pr" and (item.agent_authored or item.bot_authored) and item.status in CLAIMED_STATUSES
+            and idle is not None and idle >= CLAIMED_IDLE_DAYS)
+
+
+def analyze(items: list[WorkItem], today: date, archive_days: int = ARCHIVE_DAYS) -> dict[str, list[Finding]]:
     index = github_index(items)
     closers: dict[str, list[str]] = {}
     done_linkers: dict[str, list[str]] = {}
+    done_listers: dict[str, list[str]] = {}
     for item in items:
         if item.kind == "pr" and item.status == "done":
             for key in item.closes:
                 closers.setdefault(key, []).append(item.github_key)
         if item.source != "github" and item.status == "done":
-            for key in item.refs:
+            for key in sorted({*item.status_refs, *item.done_refs}):
                 done_linkers.setdefault(key, []).append(item.id)
+        elif item.source != "github":
+            for key in item.done_refs:
+                done_listers.setdefault(key, []).append(item.id)
     active = [item for item in items if item.status != "done"]
-    looks_done, ranked, stuck, waiting = [], [], [], []
+    looks_done, ranked, stuck, waiting, agent_prs, archive = [], [], [], [], [], []
     for item in active:
         idle = idle_days(item, today)
-        done_reasons = looks_done_reasons(item, index, closers, done_linkers)
+        if idle is not None and idle >= archive_days:
+            archive.append(Finding(item.id, idle, [f"{item.status}, idle {idle} days, past the {archive_days}-day archive age; report only, nothing is closed"]))
+            continue
+        done_reasons = looks_done_reasons(item, index, closers, done_linkers, done_listers)
         if done_reasons:
             looks_done.append((idle or 0, Finding(item.id, len(done_reasons), done_reasons)))
             continue
@@ -141,6 +161,11 @@ def analyze(items: list[WorkItem], today: date) -> dict[str, list[Finding]]:
         ranked.append(Finding(item.id, score, reasons))
         if item.waiting_on_erik:
             waiting.append(Finding(item.id, score, list(item.waiting_on_erik)))
+        if is_stale_automated_pr(item, idle):
+            state = "ready for review" if item.status == "review" else "in draft"
+            author = "agent-authored PR" if item.agent_authored else "bot PR"
+            agent_prs.append(Finding(item.id, idle, [f"{author} awaiting a verdict: {state}, idle {idle} days; merge or close"]))
+            continue
         stuck_why = stuck_reasons(item, today)
         if stuck_why:
             claimed = item.status in CLAIMED_STATUSES or bool(item.claimed_by)
@@ -151,4 +176,6 @@ def analyze(items: list[WorkItem], today: date) -> dict[str, list[Finding]]:
         "stuck": [entry[-1] for entry in sorted(stuck, key=lambda entry: entry[:3])],
         "looks_done": [finding for _, finding in sorted(looks_done, key=lambda entry: (-entry[0], entry[1].id))],
         "waiting_on_erik": sorted(waiting, key=lambda finding: (-finding.score, -idle_of[finding.id], finding.id)),
+        "agent_prs": sorted(agent_prs, key=lambda finding: (-finding.score, finding.id)),
+        "archive": sorted(archive, key=lambda finding: (-finding.score, finding.id)),
     }

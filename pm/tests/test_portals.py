@@ -32,6 +32,26 @@ INVENTED_PAUSED = """# Invented letter resend
 > **Paused 2026-09-19 (invented-07).** Ask Erik whether the resend is still needed.
 """
 
+INVENTED_LINK_CONTEXTS = """# Invented link contexts
+
+> **Done, verified 2026-09-18.** invented-org/banner#1 is closed.
+
+- [x] Ship invented-org/checklist#2
+- [ ] Finish invented-org/todo#6
+Tracked in invented-org/tracked#3.
+
+## What's done
+
+The work landed in invented-org/heading#4.
+- Findings written into invented-org/touched#154 as two review comments.
+- **Ticket filed:** invented-org/filed#144, covering invented validation.
+
+## Context you need
+
+A whole invented ticket (`invented-org/widget#157`, follower alerts) did not survive the machine move.
+Status: invented-org/status#5 is open.
+"""
+
 
 def write(folder: Path, name: str, text: str) -> None:
     (folder / name).write_text(text, encoding="utf-8")
@@ -79,6 +99,15 @@ class PortalAdapter(unittest.TestCase):
         self.assertTrue(item.waiting_on_erik)
         self.assertEqual(item.refs, ["invented-org/widget#12", "invented-org/widget#13"])
         self.assertEqual(item.links, ["https://github.com/invented-org/widget/pull/13"])
+
+    def test_only_status_bearing_links_are_status_refs(self):
+        write(self.folder, "portal-2026-09-01-links-done.md", INVENTED_LINK_CONTEXTS)
+        item = self.only()
+        self.assertEqual(item.status_refs, ["invented-org/status#5", "invented-org/todo#6", "invented-org/tracked#3"])
+        self.assertEqual(item.done_refs, ["invented-org/banner#1", "invented-org/checklist#2", "invented-org/heading#4"])
+        self.assertIn("invented-org/widget#157", item.refs)
+        self.assertIn("invented-org/touched#154", item.refs)
+        self.assertNotIn("invented-org/filed#144", item.status_refs + item.done_refs)
 
     def test_claim_banner_sets_claimant_and_activity(self):
         write(self.folder, "portal-2026-09-02-gadget-migration-in-progress.md", INVENTED_CLAIMED)

@@ -1,6 +1,6 @@
 # pm: the read-only project manager prototype
 
-`pm` gathers work items from the places Erik's work actually lives, puts them into one model, and answers four questions: what to work on next, what is stuck, what looks done but is not closed, and what is waiting on Erik. It is the first dogfood slice of quayside as "the AI project manager that has full visibility and actually gets projects done" (Erik, 2026-09-26).
+`pm` gathers work items from the places Erik's work actually lives, puts them into one model, and answers four questions: what to work on next, what is stuck, what looks done but is not closed, and what is waiting on Erik. It also sets aside agent and bot PRs awaiting a verdict and archive candidates, and says what changed since the last run. It is the first dogfood slice of quayside as "the AI project manager that has full visibility and actually gets projects done" (Erik, 2026-09-26).
 
 It only reads. It never comments, labels, closes, renames, or edits anything in any source. It uses the Python 3 standard library and the `gh` CLI, and nothing else. It lives in its own folder and does not touch the legacy Django app.
 
@@ -31,6 +31,9 @@ It writes three files to `--out`: `report.md`, `snapshot.json`, and `board.html`
 | `--today` | today | Reference day for every age calculation |
 | `--me` | `Erik` | Name used to spot work waiting on you |
 | `--top` | 15 | Items per section in the report and board |
+| `--archive-days` | 90 | Idle days after which open work becomes an archive candidate |
+| `--state-dir` | `~/.quayside/pm` | Where the previous run is kept; must be outside the repository |
+| `--no-memory` | off | Neither compare with nor record the previous run |
 
 A source that fails (no `gh` login, a missing file, a malformed CSV) is recorded under `sources.<name>.errors` in the snapshot and printed to stderr; the other sources still run and the report is still written.
 
@@ -66,15 +69,21 @@ Every source produces `WorkItem` records (`pm/model.py`):
 | `critical_hints` | Evidence snippets such as "top of queue" or "critical path" |
 | `priority` | `critical`, `high`, `medium`, `low` from the tracker or GitHub labels |
 | `done_hints`, `closes` | Text saying the work is done; tickets a merged PR says it closes |
+| `status_refs`, `done_refs` | The subset of `refs` that tracks status, and the subset the text claims is done (see below) |
+| `agent_authored`, `bot_authored` | Body or head commit carries "Generated with Claude Code" or "Co-Authored-By: Claude"; author is a bot |
 | `evidence` | Short notes on how the status was read |
 
 ## How each question is answered
 
 All weights and thresholds are constants at the top of `pm/analyze.py`. Every finding carries its reasons, so the ranking can be checked line by line.
 
+### Order of buckets
+
+An open item idle for `--archive-days` or more goes only to **archive candidates** (report only; nothing is closed). An item that looks done goes only to **looks done**. A PR by an agent or a bot, open and idle for 7 days or more, goes to **agent and bot PRs awaiting a verdict** instead of "stuck". Everything else is ranked in "next", and may also appear in "stuck" and "waiting on Erik".
+
 ### What to work on next
 
-Every item that is not done and does not look done gets a score:
+Every remaining item gets a score:
 
 | Signal | Weight |
 |---|---|
@@ -96,18 +105,25 @@ An item is stuck when it is claimed (in progress, draft PR, PR in review, or a c
 ### What looks done but is not closed
 
 - The item's own text says it is done (a `> **Done` portal banner, or a tracker Status Update saying done, shipped, merged, or live) while its status is still open.
-- Every GitHub item a portal, task, or tracker row links to (among the links that could be resolved) is closed or merged.
+- Every tracking link of a portal, task, or tracker row (among the links that could be resolved) is closed or merged.
 - A merged PR says it closes an open ticket.
 - A done portal, task, or tracker row links to a GitHub item that is still open.
+- A portal lists a GitHub item as done while that item is still open.
+
+Only links in a status-bearing context count, so a passing mention in background prose never drives a cross-check. In a portal, tracking links sit on a `Tracked` or `Status` line, an unchecked box, a banner, or under a heading about status, progress, or next steps. Done links sit on a checked box, a `Done` or `Shipped` line or banner, or under a heading about what is done or shipped. Every link in a task or tracker row counts as tracking.
 
 ### What is waiting on Erik
 
 - A PR where review is requested from you.
-- Your own PR that is ready for review and unmerged (agents open PRs under Erik's identity, and he merges his own fork PRs).
+- Someone else's ready PR, not written by an agent or a bot, in a repo you own.
 - A tracker row whose task lead is Erik.
 - Text that says so: "waiting on Erik", "needs Erik's go", "ask Erik", "decide with Erik", "Erik's call", and similar phrasings in `pm/signals.py`. Approval already granted ("with Erik's go") does not count.
 
 Bots (Dependabot, Renovate, GitHub Actions) never produce waiting-on-Erik items.
+
+## What changed since last run
+
+After each run the snapshot is kept at `~/.quayside/pm/last-snapshot.json` (folder mode 700, file mode 600, outside every repository). The next run lists items that are new, closed, gone from the sources, newly stuck, or whose status flipped. A missing or unreadable previous run is reported and treated as a first run.
 
 ## Plugging in a model later
 
@@ -117,13 +133,14 @@ This version makes no LLM call. The seam is the snapshot: `snapshot.json` (schem
 
 - Signals are regular expressions over prose. They miss unusual phrasings and occasionally match boilerplate; every signal shows its snippet so a wrong one is easy to spot.
 - `blocked_on` takes the first matching phrase in a whole portal, which can be historical context rather than a current blocker.
-- A portal that links only to finished background PRs reads as looking done.
+- Status contexts are recognized by headings and line prefixes; a portal that writes status in free prose is not cross-checked.
+- Agent authorship is read from the PR body and head commit only; an agent PR with neither marker counts as human.
 - Short refs like `repo#12` resolve only when exactly one owner has a repo by that name; bare `#12` and `PR #73` are ignored.
 - GitHub search returns at most 1000 results per query; the report says when a query was truncated.
 - TASKS.md has no per-task activity date, so an old task always reads as stuck.
 - Lookups and portal git dates run one process at a time. A live run takes about a minute, mostly GitHub search.
 - The default `--out` is a session scratchpad path on this Mac; pass `--out` anywhere else.
-- Owners, ages, and statuses are only as current as the sources. The tool has no memory between runs.
+- Owners, ages, and statuses are only as current as the sources. Run memory keeps one previous snapshot, not a history.
 
 ## Tests
 

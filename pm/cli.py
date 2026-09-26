@@ -4,7 +4,7 @@ import sys
 from datetime import date, timedelta
 from pathlib import Path
 
-from pm import analyze, render
+from pm import analyze, memory, render
 from pm.model import SourceResult, WorkItem, parse_day
 from pm.sources import github, portals, tasks, tracker
 
@@ -13,6 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUT = Path("/private/tmp/claude-501/-Users-erikwilliams-repos/d3f6b786-4af0-4459-b78b-ea696bf4180d/scratchpad/pm-out")
 DEFAULT_KEEP = Path.home() / "repos" / "Keep"
 DEFAULT_TASKS = Path.home() / "repos" / "quayside_personal" / "TASKS.md"
+DEFAULT_STATE_DIR = Path.home() / ".quayside" / "pm"
 DEFAULT_EXCLUDED_REPOS = ["beadedcloud/beadedcloud.com"]
 DEFAULT_SINCE_DAYS = 14
 MAX_LOOKUPS = 150
@@ -46,6 +47,10 @@ def parser() -> argparse.ArgumentParser:
     cli.add_argument("--today", type=day_argument, default=date.today(), help="reference day, YYYY-MM-DD")
     cli.add_argument("--me", default="Erik", help="name used to spot work waiting on you")
     cli.add_argument("--top", type=positive, default=render.DEFAULT_TOP, help="items per section in the report")
+    cli.add_argument("--archive-days", type=positive, default=analyze.ARCHIVE_DAYS,
+                     help="idle days after which open work becomes an archive candidate")
+    cli.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR, help="where the previous run is kept")
+    cli.add_argument("--no-memory", action="store_true", help="do not compare with or record the previous run")
     cli.add_argument("--from-snapshot", type=Path, help="re-render report and board from an existing snapshot.json")
     return cli
 
@@ -103,23 +108,36 @@ def write_outputs(snapshot: dict, out: Path, top: int) -> list[Path]:
 def main(argv: list[str] | None = None, gh=github.gh) -> int:
     options = parser().parse_args(argv)
     options.out = options.out.expanduser().resolve()
-    if inside_repository(options.out):
-        print(f"refusing to write inside the repository ({REPO_ROOT}); pick an --out folder outside it", file=sys.stderr)
-        return 2
+    options.state_dir = options.state_dir.expanduser().resolve()
+    for label, path in (("--out", options.out), ("--state-dir", options.state_dir)):
+        if inside_repository(path):
+            print(f"refusing to write inside the repository ({REPO_ROOT}); pick a {label} folder outside it", file=sys.stderr)
+            return 2
+    remember = not options.no_memory and not options.from_snapshot
     if options.from_snapshot:
         snapshot = json.loads(options.from_snapshot.read_text(encoding="utf-8"))
     else:
         results = collect_sources(options, gh)
         items = [item for result in results for item in result.items]
-        snapshot = build_snapshot_dict(results, analyze.analyze(items, options.today), options.today)
+        snapshot = build_snapshot_dict(results, analyze.analyze(items, options.today, options.archive_days), options.today)
         for name, source in snapshot["sources"].items():
             for error in source["errors"]:
                 print(f"{name}: {error}", file=sys.stderr)
+    if remember:
+        previous, warning = memory.load(options.state_dir)
+        if warning:
+            print(f"memory: {warning}", file=sys.stderr)
+        snapshot["changes"] = memory.diff(previous, snapshot)
     try:
         written = write_outputs(snapshot, options.out, options.top)
     except OSError as problem:
         print(f"could not write to {options.out}: {problem}", file=sys.stderr)
         return 2
+    if remember:
+        try:
+            written.append(memory.save(options.state_dir, snapshot))
+        except OSError as problem:
+            print(f"memory: could not record this run in {options.state_dir}: {problem}", file=sys.stderr)
     for path in written:
         print(path)
     return 0

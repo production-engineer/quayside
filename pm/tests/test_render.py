@@ -17,7 +17,11 @@ def snapshot():
         WorkItem(source="tasks", id="tasks:1", title="Invented old task", status="open", last_activity=date(2026, 1, 1)),
     ]
     results = [SourceResult("portals", items[:1], []), SourceResult("tasks", items[1:], ["invented warning"])]
-    return build_snapshot_dict(results, analyze.analyze(items, TODAY), TODAY)
+    built = build_snapshot_dict(results, analyze.analyze(items, TODAY), TODAY)
+    built["changes"] = {"previous_generated_on": "2026-09-25", "new": ["portal:x"], "closed": [], "gone": ["tasks:9"],
+                        "newly_stuck": [], "status_flips": [{"id": "tasks:1", "from": "backlog", "to": "open"}],
+                        "titles": {"tasks:9": "Invented vanished <b>task</b>"}}
+    return built
 
 
 class Markdown(unittest.TestCase):
@@ -25,7 +29,8 @@ class Markdown(unittest.TestCase):
         self.text = render.markdown(snapshot())
 
     def test_has_all_four_sections(self):
-        for heading in ("## What to work on next", "## What is stuck", "## Looks done but is not closed", "## Waiting on Erik"):
+        for heading in ("## What to work on next", "## What is stuck", "## Looks done but is not closed", "## Waiting on Erik",
+                        "## Agent and bot PRs awaiting a verdict", "## Archive candidates", "## What changed since last run"):
             self.assertIn(heading, self.text)
 
     def test_shows_reasons_and_counts(self):
@@ -35,6 +40,22 @@ class Markdown(unittest.TestCase):
 
     def test_unicode_survives(self):
         self.assertIn("café ✓", self.text)
+
+    def test_changes_list_titles_and_flips(self):
+        self.assertIn("Invented vanished", self.text)
+        self.assertIn("backlog to open", self.text)
+        self.assertIn("since 2026-09-25", self.text)
+
+    def test_first_run_says_there_is_nothing_to_compare(self):
+        first = snapshot()
+        first["changes"] = {"previous_generated_on": None, "new": [], "closed": [], "gone": [], "newly_stuck": [],
+                            "status_flips": [], "titles": {}}
+        self.assertIn("First run", render.markdown(first))
+
+    def test_snapshot_without_changes_still_renders(self):
+        bare = snapshot()
+        del bare["changes"]
+        self.assertIn("## What to work on next", render.markdown(bare))
 
     def test_unsafe_links_are_dropped(self):
         self.assertNotIn("javascript:", self.text)
@@ -61,8 +82,12 @@ class Html(unittest.TestCase):
         self.assertTrue(all(href.startswith(("https://", "http://", "#")) for href in hrefs))
 
     def test_has_the_four_columns(self):
-        for heading in ("What to work on next", "What is stuck", "Looks done but is not closed", "Waiting on Erik"):
+        for heading in ("What to work on next", "What is stuck", "Looks done but is not closed", "Waiting on Erik",
+                        "Agent and bot PRs awaiting a verdict", "Archive candidates", "What changed since last run"):
             self.assertIn(heading, self.page)
+
+    def test_change_titles_are_escaped(self):
+        self.assertNotIn("<b>task</b>", self.page)
 
     def test_unicode_survives(self):
         self.assertIn("café ✓", self.page)

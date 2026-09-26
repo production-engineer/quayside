@@ -102,6 +102,10 @@ class SnapshotRoundTrip(unittest.TestCase):
             done_hints=["Done, verified"],
             closes=["invented-owner/invented-repo#4"],
             claimed_by="session invented-01",
+            agent_authored=True,
+            status_refs=["invented-owner/invented-repo#3"],
+            done_refs=["invented-owner/invented-repo#5"],
+            bot_authored=True,
             evidence=["filename says in-progress"],
         )
         self.assertEqual(WorkItem.from_dict(item.to_dict()), item)

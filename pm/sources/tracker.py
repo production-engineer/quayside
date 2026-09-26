@@ -68,6 +68,7 @@ def row_item(position: int, row: dict, columns: dict, me: str, today: date) -> W
         last_activity=max(activity) if activity else None,
         links=signals.find_links(body),
         refs=signals.find_refs(body),
+        status_refs=signals.find_refs(body),
         blocked_on=signals.blocked_on(body),
         waiting_on_erik=waits,
         critical_hints=signals.critical_hints(body),

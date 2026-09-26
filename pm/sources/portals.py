@@ -46,6 +46,7 @@ def parse(path: Path, text: str, me: str, last_commit_day, today: date) -> WorkI
         evidence.append(f"filename says {suffix}")
     created = parse_day(filename_day)
     banner_lines = banners(text)
+    tracking_text, done_text = signals.status_contexts(text)
     activity = [created, last_commit_day(path)]
     claimed_by = None
     done_hints = []
@@ -74,6 +75,8 @@ def parse(path: Path, text: str, me: str, last_commit_day, today: date) -> WorkI
         last_activity=max([day for day in activity if day and day <= today], default=None),
         links=signals.find_links(text),
         refs=signals.find_refs(text),
+        status_refs=signals.find_refs(tracking_text),
+        done_refs=signals.find_refs(done_text),
         blocked_on="filename says blocked" if suffix == "blocked" else signals.blocked_on(text),
         waiting_on_erik=signals.erik_waits(text, me),
         critical_hints=signals.critical_hints(text),

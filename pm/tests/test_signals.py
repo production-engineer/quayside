@@ -48,6 +48,8 @@ class ErikWaits(unittest.TestCase):
     def test_granted_approval_with_trailing_words_is_not_a_wait(self):
         self.assertEqual(signals.erik_waits("Merged with Erik's go at 14:00."), [])
         self.assertEqual(signals.erik_waits("Shipped with Erik's approval on 2026-09-20."), [])
+        self.assertEqual(signals.erik_waits("Follow-up to #128, all from Erik's review."), [])
+        self.assertEqual(signals.erik_waits("Revised after Erik's review last week."), [])
 
     def test_other_names_do_not_match(self):
         self.assertEqual(signals.erik_waits("Waiting on Dana for the token."), [])

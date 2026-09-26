@@ -39,6 +39,7 @@ query($q: String!, $after: String) {
         assignees(first: 10) { nodes { login } }
         labels(first: 20) { nodes { name } }
         reviewRequests(first: 10) { nodes { requestedReviewer { ... on User { login } } } }
+        commits(last: 1) { nodes { commit { message } } }
       }
     }
   }
@@ -102,6 +103,11 @@ def closing_refs(body: str, repo: str) -> list[str]:
     return sorted({f"{(qualifier or repo)}#{number}".lower() for qualifier, number in CLOSING.findall(body)})
 
 
+def head_commit_message(node: dict) -> str:
+    commits = (node.get("commits") or {}).get("nodes") or []
+    return ((commits[-1] or {}).get("commit") or {}).get("message") or "" if commits else ""
+
+
 def status_of(node: dict) -> str:
     if node.get("state") != "OPEN":
         return "done"
@@ -117,11 +123,14 @@ def normalize(node: dict, viewer: str | None, me: str) -> WorkItem:
     author = (node.get("author") or {}).get("login")
     labels = [name.lower() for name in (label.get("name", "") for label in (node.get("labels") or {}).get("nodes", []))]
     status = status_of(node)
+    agent = signals.agent_marked(body) or signals.agent_marked(head_commit_message(node))
+    in_your_repo = bool(viewer) and repo.split("/", 1)[0].lower() == viewer.lower()
     waits = []
     if is_pull and status == "review" and viewer and viewer in reviewers(node.get("reviewRequests")):
         waits.append("review requested from you")
-    elif is_pull and status == "review" and viewer and author == viewer:
-        waits.append("your PR is ready and unmerged")
+    elif (is_pull and status == "review" and in_your_repo and author != viewer and not agent
+          and not is_bot(author)):
+        waits.append("ready PR in your repo awaiting your merge")
     if status != "done":
         waits.extend(signals.erik_waits(body, me))
     blocked = next((f"label: {label}" for label in labels if label_tokens(label) == ["blocked"]), None)
@@ -143,6 +152,8 @@ def normalize(node: dict, viewer: str | None, me: str) -> WorkItem:
         critical_hints=signals.critical_hints(body) if status != "done" else [],
         priority=label_priority(labels),
         closes=closing_refs(body, repo) if is_pull and node.get("mergedAt") else [],
+        agent_authored=agent,
+        bot_authored=is_bot(author),
         evidence=[f"GitHub {node['__typename']} {node.get('state', '').lower()}"
                   + (" draft" if node.get("isDraft") else "")],
     )

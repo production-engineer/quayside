@@ -46,7 +46,7 @@ class NextRanking(unittest.TestCase):
         self.assertEqual(set(ids(result["next"])[:2]), {"hint", "critical"})
 
     def test_age_adds_capped_score(self):
-        old = item("old", last_activity=date(2025, 1, 1))
+        old = item("old", last_activity=date(2026, 7, 1))
         week = item("week", last_activity=date(2026, 9, 12))
         result = analyze.analyze([week, old, item("fresh")], TODAY)
         scores = {finding.id: finding.score for finding in result["next"]}
@@ -104,7 +104,7 @@ class Stuck(unittest.TestCase):
         self.assertEqual(reasons_of(result["stuck"], "github:o/r#1"), ["PR open for review with no activity for 25 days"])
 
     def test_claimed_items_sort_before_merely_old_ones(self):
-        result = analyze.analyze([item("ancient", last_activity=date(2024, 1, 1)),
+        result = analyze.analyze([item("ancient", last_activity=date(2026, 7, 1)),
                                   item("claimed", status="review", last_activity=date(2026, 9, 1))], TODAY)
         self.assertEqual(ids(result["stuck"]), ["claimed", "ancient"])
 
@@ -114,20 +114,20 @@ class Stuck(unittest.TestCase):
 
 class LooksDone(unittest.TestCase):
     def test_portal_whose_linked_items_are_all_closed(self):
-        items = [item("portal:x", source="portal", refs=["o/r#1", "o/r#2"]),
+        items = [item("portal:x", source="portal", status_refs=["o/r#1", "o/r#2"]),
                  gh("o/r#1", status="done"), gh("o/r#2", kind="pr", status="done")]
         result = analyze.analyze(items, TODAY)
         self.assertEqual(ids(result["looks_done"]), ["portal:x"])
 
     def test_one_open_link_keeps_it_open(self):
-        items = [item("portal:x", source="portal", refs=["o/r#1", "o/r#2"]),
+        items = [item("portal:x", source="portal", status_refs=["o/r#1", "o/r#2"]),
                  gh("o/r#1", status="done"), gh("o/r#2")]
         self.assertEqual(analyze.analyze(items, TODAY)["looks_done"], [])
 
     def test_unresolved_links_do_not_count(self):
-        items = [item("portal:x", source="portal", refs=["o/r#1", "o/r#9"]), gh("o/r#1", status="done")]
+        items = [item("portal:x", source="portal", status_refs=["o/r#1", "o/r#9"]), gh("o/r#1", status="done")]
         self.assertEqual(ids(analyze.analyze(items, TODAY)["looks_done"]), ["portal:x"])
-        self.assertEqual(analyze.analyze([item("portal:y", source="portal", refs=["o/r#9"])], TODAY)["looks_done"], [])
+        self.assertEqual(analyze.analyze([item("portal:y", source="portal", status_refs=["o/r#9"])], TODAY)["looks_done"], [])
 
     def test_open_issue_closed_by_merged_pr(self):
         items = [gh("o/r#3"), gh("o/r#7", kind="pr", status="done", closes=["o/r#3"])]
@@ -136,13 +136,31 @@ class LooksDone(unittest.TestCase):
         self.assertTrue(any("o/r#7" in reason for reason in reasons_of(result["looks_done"], "github:o/r#3")))
 
     def test_open_ticket_linked_from_a_done_portal(self):
-        items = [item("portal:x", source="portal", status="done", refs=["o/r#1"]), gh("o/r#1")]
+        items = [item("portal:x", source="portal", status="done", status_refs=["o/r#1"]), gh("o/r#1")]
         result = analyze.analyze(items, TODAY)
         self.assertEqual(ids(result["looks_done"]), ["github:o/r#1"])
         self.assertTrue(any("portal:x" in reason for reason in reasons_of(result["looks_done"], "github:o/r#1")))
 
+    def test_links_listed_as_done_do_not_make_the_portal_look_done(self):
+        items = [item("portal:x", source="portal", status="in_progress", done_refs=["o/r#149"]), gh("o/r#149", status="done")]
+        self.assertEqual(analyze.analyze(items, TODAY)["looks_done"], [])
+
+    def test_open_item_listed_as_done_is_a_mismatch(self):
+        items = [item("portal:x", source="portal", status="in_progress", done_refs=["o/r#8"]), gh("o/r#8")]
+        result = analyze.analyze(items, TODAY)
+        self.assertEqual(ids(result["looks_done"]), ["github:o/r#8"])
+        self.assertIn("portal:x lists this as done but it is still open", reasons_of(result["looks_done"], "github:o/r#8"))
+
+    def test_done_portal_counts_its_done_links_too(self):
+        items = [item("portal:x", source="portal", status="done", done_refs=["o/r#4"]), gh("o/r#4")]
+        self.assertEqual(ids(analyze.analyze(items, TODAY)["looks_done"]), ["github:o/r#4"])
+
+    def test_passing_mention_is_not_a_cross_check(self):
+        items = [item("portal:x", source="portal", status="done", refs=["o/r#157"]), gh("o/r#157")]
+        self.assertEqual(analyze.analyze(items, TODAY)["looks_done"], [])
+
     def test_done_items_are_not_reported(self):
-        items = [item("portal:x", source="portal", status="done", refs=["o/r#1"]), gh("o/r#1", status="done")]
+        items = [item("portal:x", source="portal", status="done", status_refs=["o/r#1"]), gh("o/r#1", status="done")]
         self.assertEqual(analyze.analyze(items, TODAY)["looks_done"], [])
 
 
@@ -153,6 +171,64 @@ class WaitingOnErik(unittest.TestCase):
         self.assertEqual(ids(result["waiting_on_erik"]), ["w"])
 
 
+class AgentPrs(unittest.TestCase):
+    def test_stale_agent_pr_gets_its_own_bucket(self):
+        result = analyze.analyze([gh("o/r#1", kind="pr", status="review", agent_authored=True, last_activity=date(2026, 9, 10))], TODAY)
+        self.assertEqual(ids(result["agent_prs"]), ["github:o/r#1"])
+        self.assertIn("agent-authored PR awaiting a verdict", reasons_of(result["agent_prs"], "github:o/r#1")[0])
+        self.assertEqual(result["stuck"], [])
+        self.assertEqual(result["waiting_on_erik"], [])
+
+    def test_fresh_agent_pr_is_not_yet_in_the_bucket(self):
+        result = analyze.analyze([gh("o/r#1", kind="pr", status="review", agent_authored=True, last_activity=date(2026, 9, 24))], TODAY)
+        self.assertEqual(result["agent_prs"], [])
+
+    def test_stale_bot_pr_joins_the_bucket_not_stuck(self):
+        result = analyze.analyze([gh("o/r#3", kind="pr", status="review", bot_authored=True, last_activity=date(2026, 8, 1))], TODAY)
+        self.assertEqual(ids(result["agent_prs"]), ["github:o/r#3"])
+        self.assertIn("bot PR awaiting a verdict", reasons_of(result["agent_prs"], "github:o/r#3")[0])
+        self.assertEqual(result["stuck"], [])
+
+    def test_agent_issues_are_not_agent_prs(self):
+        result = analyze.analyze([gh("o/r#1", agent_authored=True, last_activity=date(2026, 9, 1))], TODAY)
+        self.assertEqual(result["agent_prs"], [])
+
+    def test_oldest_agent_pr_first(self):
+        result = analyze.analyze([gh("o/r#1", kind="pr", status="review", agent_authored=True, last_activity=date(2026, 9, 10)),
+                                  gh("o/r#2", kind="pr", status="in_progress", agent_authored=True, last_activity=date(2026, 8, 10))], TODAY)
+        self.assertEqual(ids(result["agent_prs"]), ["github:o/r#2", "github:o/r#1"])
+
+
+class ArchiveCandidates(unittest.TestCase):
+    def test_items_idle_past_the_archive_age_leave_every_other_bucket(self):
+        old = item("old", status="in_progress", last_activity=date(2026, 6, 28), waiting_on_erik=["x"])
+        result = analyze.analyze([old], TODAY)
+        self.assertEqual(ids(result["archive"]), ["old"])
+        for bucket in ("next", "stuck", "waiting_on_erik", "agent_prs", "looks_done"):
+            self.assertEqual(result[bucket], [], bucket)
+        self.assertIn("idle 90 days", reasons_of(result["archive"], "old")[0])
+
+    def test_one_day_short_of_the_archive_age_stays_active(self):
+        result = analyze.analyze([item("young", last_activity=date(2026, 6, 29))], TODAY)
+        self.assertEqual(result["archive"], [])
+        self.assertEqual(ids(result["stuck"]), ["young"])
+
+    def test_archive_age_is_configurable(self):
+        result = analyze.analyze([item("a", last_activity=date(2026, 9, 1))], TODAY, archive_days=20)
+        self.assertEqual(ids(result["archive"]), ["a"])
+
+    def test_undated_items_are_not_archived(self):
+        result = analyze.analyze([item("nodate", last_activity=None)], TODAY)
+        self.assertEqual(result["archive"], [])
+
+    def test_done_items_are_not_archived(self):
+        self.assertEqual(analyze.analyze([item("d", status="done", last_activity=date(2020, 1, 1))], TODAY)["archive"], [])
+
+    def test_oldest_first(self):
+        result = analyze.analyze([item("a", last_activity=date(2026, 1, 1)), item("b", last_activity=date(2024, 1, 1))], TODAY)
+        self.assertEqual(ids(result["archive"]), ["b", "a"])
+
+
 class QualifyRefs(unittest.TestCase):
     def test_short_refs_resolve_through_the_repo_index(self):
         items = [item("t", refs=["widget#4", "gadget#2", "o/r#1"])]
@@ -161,11 +237,16 @@ class QualifyRefs(unittest.TestCase):
         self.assertEqual(qualified[0].refs, ["invented-org/widget#4", "o/r#1"])
 
     def test_unresolved_refs_are_the_ones_not_collected(self):
-        items = [item("t", refs=["o/r#1", "o/r#2"]), gh("o/r#1")]
-        self.assertEqual(analyze.unresolved_refs(items), ["o/r#2"])
+        items = [item("t", status_refs=["o/r#1", "o/r#2"], done_refs=["o/r#4"], refs=["o/r#3"]), gh("o/r#1")]
+        self.assertEqual(analyze.unresolved_refs(items), ["o/r#2", "o/r#4"])
 
     def test_refs_inside_github_bodies_are_not_looked_up(self):
-        self.assertEqual(analyze.unresolved_refs([gh("o/r#1", refs=["o/r#5"])]), [])
+        self.assertEqual(analyze.unresolved_refs([gh("o/r#1", status_refs=["o/r#5"])]), [])
+
+    def test_status_refs_are_qualified_too(self):
+        qualified = analyze.qualify_refs([item("t", status_refs=["widget#4"], done_refs=["widget#5"])], {"widget": ["invented-org/widget"]})
+        self.assertEqual(qualified[0].status_refs, ["invented-org/widget#4"])
+        self.assertEqual(qualified[0].done_refs, ["invented-org/widget#5"])
 
 
 if __name__ == "__main__":

@@ -17,6 +17,19 @@ CRITICAL_PATTERNS = [
                     r"\bblocks? (?:the )?MVP\b")
 ]
 
+AGENT_MARK = re.compile(r"Generated with \[?Claude Code|Co-Authored-By:\s*Claude\b", re.IGNORECASE)
+DONE_HEADING = re.compile(r"\b(?:done|shipped|landed|completed?)\b", re.IGNORECASE)
+TRACKING_HEADING = re.compile(r"\b(?:status|tracked|tracking|progress|next)\b", re.IGNORECASE)
+CHECKED_LINE = re.compile(r"^\s*[-*]\s*\[[xX]\]")
+UNCHECKED_LINE = re.compile(r"^\s*[-*]\s*\[ \]")
+DONE_BANNER = re.compile(r"^\s*>\s*\*\*\s*done\b", re.IGNORECASE)
+BANNER = re.compile(r"^\s*>\s*\*\*")
+DONE_LINE = re.compile(r"^\s*(?:[-*]\s*)?\**(?:done|shipped)\b", re.IGNORECASE)
+TRACKING_LINE = re.compile(r"^\s*(?:[-*]\s*)?\**(?:status|tracked)\b", re.IGNORECASE)
+HEADING_LINE = re.compile(r"^#{1,6}\s")
+COMPLETION_WORD = re.compile(r"\b(?:merged|closed|fixed|resolved|shipped|landed)\b", re.IGNORECASE)
+GRANTED_PREFIX = re.compile(r"\b(?:with|from|after)\s+$", re.IGNORECASE)
+
 BLOCKED_PATTERN = re.compile(r"\b(?:blocked (?:on|by)|depends on) ([^.;\n]{2,80})", re.IGNORECASE)
 
 
@@ -50,7 +63,7 @@ def snippet(text: str, match: re.Match) -> str:
 
 
 def granted(text: str, match: re.Match) -> bool:
-    return text[max(0, match.start() - 5):match.start()].lower() == "with "
+    return bool(GRANTED_PREFIX.search(text[max(0, match.start() - 8):match.start()]))
 
 
 def matches(text: str, patterns: list[re.Pattern]) -> list[str]:
@@ -98,6 +111,32 @@ def blocked_on(text: str) -> str | None:
             continue
         return match.group(1).strip()
     return None
+
+
+def agent_marked(text: str) -> bool:
+    return bool(AGENT_MARK.search(text))
+
+
+def line_context(line: str, section: str | None) -> str | None:
+    if CHECKED_LINE.match(line) or DONE_BANNER.match(line) or DONE_LINE.match(line):
+        return "done"
+    if UNCHECKED_LINE.match(line) or BANNER.match(line) or TRACKING_LINE.match(line):
+        return "tracking"
+    return section
+
+
+def status_contexts(text: str) -> tuple[str, str]:
+    tracking, done, section = [], [], None
+    for line in text.splitlines():
+        if HEADING_LINE.match(line):
+            section = "done" if DONE_HEADING.search(line) else "tracking" if TRACKING_HEADING.search(line) else None
+            continue
+        context = line_context(line, section)
+        if context == "done" and (CHECKED_LINE.match(line) or DONE_BANNER.match(line) or COMPLETION_WORD.search(line)):
+            done.append(line)
+        elif context == "tracking":
+            tracking.append(line)
+    return "\n".join(tracking), "\n".join(done)
 
 
 def dates_in(text: str) -> list[date]:

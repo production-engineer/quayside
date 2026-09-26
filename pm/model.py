@@ -45,6 +45,10 @@ class WorkItem:
     done_hints: list[str] = field(default_factory=list)
     closes: list[str] = field(default_factory=list)
     claimed_by: str | None = None
+    agent_authored: bool = False
+    status_refs: list[str] = field(default_factory=list)
+    done_refs: list[str] = field(default_factory=list)
+    bot_authored: bool = False
     evidence: list[str] = field(default_factory=list)
 
     @property

@@ -66,6 +66,11 @@ class TasksAdapter(unittest.TestCase):
     def test_dependency_on_a_task_elsewhere_keeps_the_phrase(self):
         self.assertEqual(self.items(INVENTED_TASKS)["tasks:7"].blocked_on, "RH tracker task 98 taking shape")
 
+    def test_every_task_link_is_status_bearing(self):
+        self.path.write_text("## Open\n\n- [ ] 1. Invented (added 2026-08-15)\n  See invented-org/widget#9.\n", encoding="utf-8")
+        item = tasks.collect(self.path).items[0]
+        self.assertEqual(item.status_refs, ["invented-org/widget#9"])
+
     def test_unicode_title_and_impossible_date(self):
         item = self.items(INVENTED_TASKS)["tasks:6"]
         self.assertEqual(item.title, "Café ✓ 北极 invented unicode task")

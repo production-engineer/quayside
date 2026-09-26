@@ -51,6 +51,7 @@ class TrackerAdapter(unittest.TestCase):
         self.assertEqual(item.created, date(2026, 8, 1))
         self.assertEqual(item.last_activity, date(2026, 8, 20))
         self.assertEqual(item.refs, ["invented-org/widget#4"])
+        self.assertEqual(item.status_refs, ["invented-org/widget#4"])
         self.assertEqual(item.links, ["https://example.com/invented"])
         self.assertEqual(item.project, "remote-hands")
 

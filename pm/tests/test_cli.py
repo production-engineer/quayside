@@ -28,9 +28,11 @@ class Cli(unittest.TestCase):
         self.tasks = self.base / "TASKS.md"
         self.tasks.write_text("## Open\n\n- [ ] 1. Invented task (added 2026-09-01)\n", encoding="utf-8")
         self.out = self.base / "out"
+        self.state = self.base / "state"
 
     def run_cli(self, *extra, gh=failing_gh):
-        argv = ["--keep", str(self.keep), "--tasks", str(self.tasks), "--out", str(self.out), "--today", "2026-09-26", *extra]
+        argv = ["--keep", str(self.keep), "--tasks", str(self.tasks), "--out", str(self.out), "--today", "2026-09-26",
+                "--state-dir", str(self.state), *extra]
         stdout, stderr = io.StringIO(), io.StringIO()
         with redirect_stdout(stdout), redirect_stderr(stderr):
             code = cli.main(argv, gh=gh)
@@ -85,7 +87,7 @@ class Cli(unittest.TestCase):
 
     def test_excluded_repos_are_not_looked_up(self):
         (self.keep / "portal-2026-09-02-frozen-ref-not-started.md").write_text(
-            "# Invented\n\nSee invented-org/frozen#40 and invented-org/live#41.\n", encoding="utf-8")
+            "# Invented\n\nTracked in invented-org/frozen#40 and invented-org/live#41.\n", encoding="utf-8")
         calls = []
 
         def fake(args):
@@ -101,6 +103,35 @@ class Cli(unittest.TestCase):
         self.run_cli("--owner", "invented-org", "--exclude-repo", "invented-org/frozen", gh=fake)
         looked_up = [call[1] for call in calls if call[0] == "api" and call[1].startswith("repos/")]
         self.assertEqual(looked_up, ["repos/invented-org/live/issues/41"])
+
+    def test_second_run_reports_what_changed(self):
+        self.run_cli("--no-github")
+        first = json.loads((self.out / "snapshot.json").read_text(encoding="utf-8"))
+        self.assertIsNone(first["changes"]["previous_generated_on"])
+        self.tasks.write_text("## Open\n\n- [ ] 1. Invented task (added 2026-09-01)\n- [ ] 2. Invented new task (added 2026-09-26)\n",
+                              encoding="utf-8")
+        self.run_cli("--no-github")
+        second = json.loads((self.out / "snapshot.json").read_text(encoding="utf-8"))
+        self.assertEqual(second["changes"]["previous_generated_on"], "2026-09-26")
+        self.assertEqual(second["changes"]["new"], ["tasks:2"])
+        self.assertIn("What changed since last run", (self.out / "report.md").read_text(encoding="utf-8"))
+
+    def test_no_memory_leaves_no_state(self):
+        self.run_cli("--no-github", "--no-memory")
+        self.assertFalse(self.state.exists())
+
+    def test_state_dir_inside_the_repository_is_refused(self):
+        self.state = REPO_ROOT / "pm-state-should-not-exist"
+        self.addCleanup(shutil.rmtree, self.state, True)
+        code, _, stderr = self.run_cli("--no-github")
+        self.assertEqual(code, 2)
+        self.assertFalse(self.state.exists())
+        self.assertIn("inside the repository", stderr)
+
+    def test_archive_days_flag_is_passed_through(self):
+        self.run_cli("--no-github", "--archive-days", "1")
+        snapshot = json.loads((self.out / "snapshot.json").read_text(encoding="utf-8"))
+        self.assertIn("tasks:1", [finding["id"] for finding in snapshot["findings"]["archive"]])
 
     def test_rerenders_from_a_snapshot(self):
         self.run_cli("--no-github")

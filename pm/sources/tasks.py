@@ -66,6 +66,7 @@ def collect(path: Path, me: str = "Erik") -> SourceResult:
             last_activity=created,
             links=signals.find_links(body),
             refs=signals.find_refs(body),
+            status_refs=signals.find_refs(body),
             blocked_on=dependency(block, numbers, done_numbers),
             waiting_on_erik=signals.erik_waits(body, me),
             critical_hints=signals.critical_hints(body),

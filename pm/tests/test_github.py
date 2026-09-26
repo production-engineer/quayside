@@ -137,11 +137,53 @@ class GithubAdapter(unittest.TestCase):
             pull(10, "Invented bot bump", author={"login": "dependabot"}),
         ])], "is:issue is:open": [page([issue(11, "Invented question", body="This needs Erik's call on scope.")])]})
         items = {item.id: item for item in collect(fake).items}
-        self.assertEqual(items["github:invented-org/widget#5"].waiting_on_erik, ["your PR is ready and unmerged"])
+        self.assertEqual(items["github:invented-org/widget#5"].waiting_on_erik, [])
         self.assertEqual(items["github:invented-org/widget#6"].waiting_on_erik, [])
         self.assertEqual(items["github:invented-org/widget#9"].waiting_on_erik, ["review requested from you"])
         self.assertEqual(items["github:invented-org/widget#10"].waiting_on_erik, [])
         self.assertTrue(items["github:invented-org/widget#11"].waiting_on_erik)
+
+    def test_agent_marker_in_pr_body_marks_agent_authorship(self):
+        fake = FakeGh({"is:pr is:open": [page([pull(5, "Invented agent PR", body="Did it.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)")])]})
+        item = collect(fake).items[0]
+        self.assertTrue(item.agent_authored)
+        self.assertEqual(item.waiting_on_erik, [])
+
+    def test_agent_marker_in_head_commit_marks_agent_authorship(self):
+        fake = FakeGh({"is:pr is:open": [page([pull(5, "Invented", commits={"nodes": [{"commit": {"message": "Fix\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"}}]})])]})
+        self.assertTrue(collect(fake).items[0].agent_authored)
+
+    def test_agent_marker_in_issue_body(self):
+        fake = FakeGh({"is:issue is:open": [page([issue(3, "Invented", body="Co-authored-by: Claude")])]})
+        self.assertTrue(collect(fake).items[0].agent_authored)
+
+    def test_bot_pr_is_bot_authored(self):
+        fake = FakeGh({"is:pr is:open": [page([pull(10, "Invented bump", author={"login": "dependabot"})])]})
+        item = collect(fake).items[0]
+        self.assertTrue(item.bot_authored)
+        self.assertFalse(item.agent_authored)
+
+    def test_plain_pr_is_not_agent_authored(self):
+        fake = FakeGh({"is:pr is:open": [page([pull(5, "Invented human PR", body="Handwritten.")])]})
+        self.assertFalse(collect(fake).items[0].agent_authored)
+
+    def test_someone_elses_ready_pr_in_your_own_repo_waits_on_you(self):
+        fake = FakeGh({"is:pr is:open": [page([
+            pull(5, "Invented contribution", author={"login": "invented-dana"}, repository={"nameWithOwner": f"{VIEWER}/tool"},
+                 url=f"https://github.com/{VIEWER}/tool/pull/5"),
+            pull(6, "Invented org PR", author={"login": "invented-dana"}),
+        ])]})
+        items = {item.id: item for item in collect(fake).items}
+        self.assertEqual(items[f"github:{VIEWER}/tool#5"].waiting_on_erik, ["ready PR in your repo awaiting your merge"])
+        self.assertEqual(items["github:invented-org/widget#6"].waiting_on_erik, [])
+
+    def test_review_request_waits_even_on_agent_prs(self):
+        fake = FakeGh({"is:pr is:open": [page([pull(9, "Invented", body="Co-Authored-By: Claude",
+                                                   reviewRequests={"nodes": [{"requestedReviewer": {"login": VIEWER}}]})])]})
+        self.assertEqual(collect(fake).items[0].waiting_on_erik, ["review requested from you"])
+
+    def test_search_asks_for_the_head_commit_message(self):
+        self.assertIn("commits(last: 1)", github.SEARCH_QUERY)
 
     def test_bodies_are_not_stored(self):
         fake = FakeGh({"is:issue is:open": [page([issue(11, "Invented", body="invented secret-looking body text")])]})

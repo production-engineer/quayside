@@ -12,6 +12,7 @@ STATUS_BY_SUFFIX = {"not-started": "open", "in-progress": "in_progress", "done":
 TITLE_SUFFIX = re.compile(r"\s*(?:[:—-]\s*)?Handoff\s*$", re.IGNORECASE)
 CLAIMANT = re.compile(r"\bby (session [\w.-]+|an active session)", re.IGNORECASE)
 UNBANNERED_CLAIM = "another session (filename says in-progress)"
+PROJECT_LINE = re.compile(r"^\s*[-*]?\s*\**Project:?\**:?\s*`?([~/][^`\s)]*)", re.MULTILINE)
 
 
 def git_last_commit_day(path: Path) -> date | None:
@@ -21,6 +22,11 @@ def git_last_commit_day(path: Path) -> date | None:
     except (OSError, subprocess.SubprocessError):
         return None
     return parse_day(completed.stdout.strip()) if completed.returncode == 0 else None
+
+
+def declared_project(text: str) -> str | None:
+    match = PROJECT_LINE.search(text)
+    return match.group(1) if match else None
 
 
 def banners(text: str) -> list[str]:
@@ -67,7 +73,7 @@ def parse(path: Path, text: str, me: str, last_commit_day, today: date) -> WorkI
         source="portal",
         id=f"portal:{filename_day + '-' if filename_day else ''}{slug}",
         title=heading(text) or slug,
-        project="Keep",
+        project=declared_project(text) or "Keep",
         kind="portal",
         status=status,
         owner=claimed_by if claimed_by != UNBANNERED_CLAIM else None,

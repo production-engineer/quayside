@@ -62,7 +62,7 @@ def markdown_title(item: dict) -> str:
 
 
 def markdown(snapshot: dict, top: int = DEFAULT_TOP) -> str:
-    lines = [f"# Project manager report, {snapshot['generated_on']}", ""]
+    lines = [f"# Project manager report, {snapshot.get('tenant') or 'no tenant'}, {snapshot['generated_on']}", ""]
     counts = {key: len(findings(snapshot, key)) for key, _ in SECTIONS}
     lines.append(f"{len(snapshot['items'])} work items: {counts['next']} ranked, {counts['stuck']} stuck, "
                  f"{counts['looks_done']} look done, {counts['waiting_on_erik']} waiting on Erik, "
@@ -140,9 +140,26 @@ def html(snapshot: dict, top: int = DEFAULT_TOP) -> str:
     return (
         "<!doctype html><html lang=en><head><meta charset=utf-8>"
         "<meta name=viewport content='width=device-width, initial-scale=1'>"
-        f"<title>Project board {escape(snapshot['generated_on'])}</title><style>{STYLE}</style></head><body><main>"
-        f"<h1>Project board</h1><p class=summary>{len(snapshot['items'])} work items, generated "
+        f"<title>Project board {escape(snapshot.get('tenant') or '')} {escape(snapshot['generated_on'])}</title><style>{STYLE}</style></head><body><main>"
+        f"<h1>Project board: {escape(snapshot.get('tenant') or 'no tenant')}</h1><p class=summary>{len(snapshot['items'])} work items, generated "
         f"{escape(snapshot['generated_on'])}. Read only; nothing here changes a source.</p>"
         f"{changes}<div class=board>{''.join(columns)}</div>{verdict_section}"
         f"<details><summary>Sources</summary><ul>{sources}</ul></details></main></body></html>\n"
     )
+
+
+COMBINED_SECTIONS = ["waiting_on_erik", "next", "stuck", "looks_done"]
+
+
+def combined(snapshots: list[dict], top: int = DEFAULT_TOP) -> str:
+    lines = ["# Combined view", ""]
+    for snapshot in snapshots:
+        counts = ", ".join(f"{len(findings(snapshot, key))} {label.lower()}" for key, label in SECTIONS if key in COMBINED_SECTIONS)
+        lines += [f"## {snapshot.get('tenant')}, {snapshot['generated_on']}", "", counts]
+        for key, label in SECTIONS:
+            if key not in COMBINED_SECTIONS:
+                continue
+            lines += ["", f"### {label}", ""]
+            lines += [f"- {markdown_title(item)} ({item['source']})" for _, item in entries(snapshot, key, top)]
+        lines.append("")
+    return "\n".join(lines)

@@ -109,6 +109,15 @@ class PortalAdapter(unittest.TestCase):
         self.assertIn("invented-org/touched#154", item.refs)
         self.assertNotIn("invented-org/filed#144", item.status_refs + item.done_refs)
 
+    def test_declared_project_path_becomes_the_project(self):
+        write(self.folder, "portal-2026-09-01-declared-not-started.md",
+              "# Invented\n\n## Where to start\n\n- Project: `/Users/someone-else/repos/invented-app` (the invented app)\n")
+        self.assertEqual(self.only().project, "/Users/someone-else/repos/invented-app")
+
+    def test_prose_project_line_declares_no_path(self):
+        write(self.folder, "portal-2026-09-01-prose-not-started.md", "# Invented\n\n- Project: this is invented operations work.\n")
+        self.assertEqual(self.only().project, "Keep")
+
     def test_claim_banner_sets_claimant_and_activity(self):
         write(self.folder, "portal-2026-09-02-gadget-migration-in-progress.md", INVENTED_CLAIMED)
         item = self.only()

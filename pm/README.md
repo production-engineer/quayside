@@ -4,6 +4,21 @@
 
 It only reads. It never comments, labels, closes, renames, or edits anything in any source. It uses the Python 3 standard library and the `gh` CLI, and nothing else. It lives in its own folder and does not touch the legacy Django app.
 
+## Tenants
+
+Remote Hands, beadedcloud and Erik's personal work are separate orgs, and the tool never stores data from two of them together (spec D15, rule 4.2). Every item is attributed to exactly one tenant before anything is written, by the fixed rules of spec Section 4.3:
+
+| Source | Rule |
+|---|---|
+| GitHub | The repo owner, through the config table `pm/tenant-owners.json` (`Remote-Hands-LLC` is `rh`, `beadedcloud` is `bc`, `production-engineer` and any other owner is `personal`) |
+| RH Task Tracker | Always `rh` |
+| quayside TASKS.md | The git remote owner of the repo holding the file |
+| Keep portal | The git remote owner of the path on its `Project:` line |
+
+An item no rule can place, such as a portal with no `Project:` path (or one whose path is missing on this machine), is left out of every tenant and reported only as a count by source. This deliberately fails closed where the spec's reference algorithm returns `personal`: many Remote Hands portals declare no path, so the spec's default would file Remote Hands work under the personal tenant.
+
+Each tenant runs its own pass. GitHub is searched only for that tenant's owners, and a link to another tenant's repo stays a link and is never looked up. Output goes to `<out>/<tenant>/` and run memory to `~/.quayside/pm/<tenant>/last-snapshot.json`; no file holds two tenants. `--combined-view` prints one view composed from the per-tenant snapshots to stdout and writes nothing.
+
 ## Run it
 
 From the repository root:
@@ -12,10 +27,12 @@ From the repository root:
 python3 -m pm
 python3 -m pm --tracker-csv ~/Downloads/rh-task-tracker.csv
 python3 -m pm --no-github --out /tmp/pm-out
-python3 -m pm --from-snapshot /tmp/pm-out/snapshot.json --out /tmp/pm-out
+python3 -m pm --tenant rh --tracker-csv ~/Downloads/rh-task-tracker.csv
+python3 -m pm --combined-view
+python3 -m pm --from-snapshot /tmp/pm-out/rh/snapshot.json --out /tmp/pm-out
 ```
 
-It writes three files to `--out`: `report.md`, `snapshot.json`, and `board.html` (a static page with no external requests). The default output folder is the scratchpad of the session that built this prototype. The tool refuses to write anywhere inside this repository, so generated snapshots can never be committed by accident.
+Each tenant gets three files under `--out/<tenant>/`: `report.md`, `snapshot.json`, and `board.html` (a static page with no external requests). The default output folder is the scratchpad of the session that built this prototype. The tool refuses to write anywhere inside this repository, so generated snapshots can never be committed by accident.
 
 | Flag | Default | What it does |
 |---|---|---|
@@ -34,6 +51,8 @@ It writes three files to `--out`: `report.md`, `snapshot.json`, and `board.html`
 | `--archive-days` | 90 | Idle days after which open work becomes an archive candidate |
 | `--state-dir` | `~/.quayside/pm` | Where the previous run is kept; must be outside the repository |
 | `--no-memory` | off | Neither compare with nor record the previous run |
+| `--tenant` | all | Run only this tenant (`rh`, `bc`, `personal`); repeatable |
+| `--combined-view` | off | Print a view composed from the per-tenant snapshots; writes nothing |
 
 A source that fails (no `gh` login, a missing file, a malformed CSV) is recorded under `sources.<name>.errors` in the snapshot and printed to stderr; the other sources still run and the report is still written.
 
@@ -143,7 +162,7 @@ A merge-ready PR is the cheapest thing Erik can close, so it scores +6 in "next"
 
 ## What changed since last run
 
-After each run the snapshot is kept at `~/.quayside/pm/last-snapshot.json` (folder mode 700, file mode 600, outside every repository). The next run lists items that are new, closed, gone from the sources, newly stuck, or whose status flipped. A missing or unreadable previous run is reported and treated as a first run.
+After each run each tenant's snapshot is kept at `~/.quayside/pm/<tenant>/last-snapshot.json` (folder mode 700, file mode 600, outside every repository). The next run lists items that are new, closed, gone from the sources, newly stuck, or whose status flipped. A missing or unreadable previous run is reported and treated as a first run.
 
 ## Plugging in a model later
 

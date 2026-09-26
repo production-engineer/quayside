@@ -1,7 +1,6 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from bson.objectid import ObjectId
 from django.utils.decorators import method_decorator
 
 from api.models import Task, Project
@@ -170,7 +169,7 @@ class TasksAPIView(APIView):
         
         # Only get tasks for projects that contain the user
         projectIDs = [
-            str(project.id) for project in Project.objects.filter(userIDs=userID)
+            project.id for project in Project.objects.filter(userIDs__contains=[userID])
         ]
 
         tasks = Task.objects.filter(**taskData, projectID__in=projectIDs)
@@ -212,7 +211,7 @@ class TasksAPIView(APIView):
 
         # Only allow tasks for projects that contains the user
         authorizedProjectCount = Project.objects.filter(
-            id__in=projectIDs, userIDs=userID
+            id__in=projectIDs, userIDs__contains=[userID]
         ).count()
         if authorizedProjectCount != len(projectIDs):
             return {
@@ -244,8 +243,8 @@ class TasksAPIView(APIView):
 
         # Check if userID is in the project the task belongs to
         userID = decodeApiKey(authorizationToken).get("userID")
-        project = Project.objects.get(id=task["projectID"])
-        if ObjectId(userID) not in project["userIDs"]:
+        project = Project.objects.get(id=task.projectID_id)
+        if userID not in project.userIDs:
             return {
                 "message": "User not authorized to edit this task"
             }, status.HTTP_403_FORBIDDEN
@@ -271,67 +270,47 @@ class TasksAPIView(APIView):
         # Check
         if "id" not in taskData and "projectID" not in taskData:
             return (
-                {"message", "Error: Parameter 'id' or 'projectID' required"},
+                {"message": "Error: Parameter 'id' or 'projectID' required"},
                 status.HTTP_400_BAD_REQUEST,
             )
 
         userID = decodeApiKey(authorizationToken).get("userID")
         numberObjectsDeleted = 0
         if "id" in taskData:
-            task = Task.objects.get(id=taskData["id"])
+            try:
+                task = Task.objects.get(id=taskData["id"])
+            except Task.DoesNotExist:
+                return {
+                    "message": "No tasks found to delete."
+                }, status.HTTP_404_NOT_FOUND
+
             # Check if userID is in the project the task belongs to
-            project = Project.objects.get(id=task["projectID"])
-            if ObjectId(userID) not in project["userIDs"]:
+            project = Project.objects.get(id=task.projectID_id)
+            if userID not in project.userIDs:
                 return {
                     "message": "User not authorized to delete this task"
                 }, status.HTTP_403_FORBIDDEN
-            
-            if taskData.get("deleteChildren", "false") == "true":
-                numberObjectsDeleted = deleteAllChildren(taskData["id"])
-            else:
-                childTasks = Task.objects(parentTaskID=task["id"])
-                for childTask in childTasks:
-                    message, httpsCode = TasksAPIView.updateTask(
-                        {"id": childTask["id"], "parentTaskID": task["parentTaskID"]},
-                        authorizationToken,
-                    )
-                    if httpsCode != status.HTTP_200_OK:
-                        print(
-                            f"Error moving children while deleting task: {message.get('message')}"
-                        )
-                        return (
-                            f"Error moving children while deleting task: {message.get('message')}",
-                            status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        )
 
-                numberObjectsDeleted = Task.objects(id=taskData["id"]).delete()
+            if taskData.get("deleteChildren", "false") == "true":
+                numberObjectsDeleted, _ = task.delete()
+            else:
+                Task.objects.filter(parentTaskID=task.id).update(
+                    parentTaskID=task.parentTaskID_id
+                )
+                numberObjectsDeleted, _ = Task.objects.filter(id=task.id).delete()
         else:  # projectIDs
             # Check if userID is in the project
             project = Project.objects.get(id=taskData["projectID"])
-            if ObjectId(userID) not in project["userIDs"]:
+            if userID not in project.userIDs:
                 return {
                     "message": "User not authorized to delete these task(s)"
                 }, status.HTTP_403_FORBIDDEN
 
-            numberObjectsDeleted = Task.objects(
+            numberObjectsDeleted, _ = Task.objects.filter(
                 projectID=taskData["projectID"]
             ).delete()
 
         if numberObjectsDeleted == 0:
             return {"message": "No tasks found to delete."}, status.HTTP_404_NOT_FOUND
 
-        return {"message":"Task(s) Deleted Successfully"}, status.HTTP_200_OK
-
-@staticmethod
-def deleteAllChildren(taskID):
-    """
-    Recursively deletes a task and all its children, and returns the total count of deleted objects.
-    @param taskID: ID of task to delete along with all its children.
-    @return: Total number of tasks deleted.
-    """
-    numberObjectsDeleted = 0
-    children = Task.objects(parentTaskID=taskID)
-    for child in children:
-        numberObjectsDeleted += deleteAllChildren(child.id)
-    numberObjectsDeleted += Task.objects(id=taskID).delete()
-    return numberObjectsDeleted
+        return {"message": "Task(s) Deleted Successfully"}, status.HTTP_200_OK

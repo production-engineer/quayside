@@ -1,10 +1,8 @@
 import re
 
-from bson import ObjectId
-from bson.errors import InvalidId
 from django import template
-from mongoengine.errors import OperationError, ValidationError
-from pymongo.errors import PyMongoError
+from django.core.exceptions import ValidationError
+from django.db import Error as DBError
 
 from api.models import Project, Task
 from api.progress import compute_progress, cross_project_next, next_actions
@@ -25,14 +23,14 @@ def safe_colors(items):
 
 
 def task_records(tasks):
-    parent_ids = {str(task.parentTaskID) for task in tasks if task.parentTaskID}
+    parent_ids = {task.parentTaskID_id for task in tasks if task.parentTaskID_id}
     return [
         {
             "id": task.id,
             "name": task.name,
-            "status_id": task.statusId,
+            "status_id": task.statusId_id,
             "priority": task.priority,
-            "is_leaf": str(task.id) not in parent_ids,
+            "is_leaf": task.id not in parent_ids,
         }
         for task in tasks
     ]
@@ -49,9 +47,13 @@ def status_records(statuses):
 def whats_next(project_id):
     try:
         project = Project.objects.get(id=project_id)
-        statuses = status_records(project.taskStatuses)
-        tasks = list(Task.objects.filter(projectID=project_id).only("name", "statusId", "priority", "parentTaskID"))
-    except (Project.DoesNotExist, ValidationError, InvalidId, OperationError, PyMongoError):
+        statuses = status_records(project.taskStatuses.all())
+        tasks = list(
+            Task.objects.filter(projectID=project_id).only(
+                "name", "statusId", "priority", "parentTaskID"
+            )
+        )
+    except (Project.DoesNotExist, ValidationError, ValueError, DBError):
         return {"available": False}
 
     if not statuses:
@@ -82,29 +84,32 @@ def whats_next_all(user_id):
         return {"available": False}
 
     try:
-        owner = ObjectId(user_id)
-        projects = list(Project.objects.filter(userIDs=owner).only("name", "taskStatuses"))
+        projects = list(
+            Project.objects.filter(userIDs__contains=[user_id])
+            .only("name")
+            .prefetch_related("taskStatuses")
+        )
         project_ids = [project.id for project in projects]
         if not project_ids:
             return {"available": True, "projects": [], "more": 0}
         tasks = list(
-            Task.objects.filter(projectID__in=project_ids)
-            .only("name", "statusId", "priority", "parentTaskID", "projectID")
-            .limit(TASK_SCAN_LIMIT)
+            Task.objects.filter(projectID__in=project_ids).only(
+                "name", "statusId", "priority", "parentTaskID", "projectID"
+            )[:TASK_SCAN_LIMIT]
         )
-    except (ValidationError, InvalidId, OperationError, PyMongoError):
+    except (ValidationError, ValueError, DBError):
         return {"available": False}
 
     tasks_by_project = {}
     for task in tasks:
-        tasks_by_project.setdefault(str(task.projectID), []).append(task)
+        tasks_by_project.setdefault(task.projectID_id, []).append(task)
 
     project_records = [
         {
             "id": project.id,
             "name": project.name,
-            "statuses": status_records(project.taskStatuses),
-            "tasks": task_records(tasks_by_project.get(str(project.id), [])),
+            "statuses": status_records(project.taskStatuses.all()),
+            "tasks": task_records(tasks_by_project.get(project.id, [])),
         }
         for project in projects
     ]

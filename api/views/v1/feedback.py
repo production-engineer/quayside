@@ -1,9 +1,7 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from bson.objectid import ObjectId
 from django.utils.decorators import method_decorator
-from django.core.exceptions import ObjectDoesNotExist
 
 from api.decorators import apiKeyRequired
 from api.serializers import FeedbackSerializer
@@ -112,30 +110,25 @@ class FeedbackAPIView(APIView):
         @param authorizationToken      JWT authorization token.
         @return      A tuple of (response_data, http_status).
         """
-        #TODO: use auth token to check if user is admin
+        if "id" in feedbackData:
+            feedback_objs = Feedback.objects.filter(id=feedbackData["id"])
+        elif "taskID" in feedbackData:
+            feedback_objs = Feedback.objects.filter(taskID=feedbackData["taskID"])
+        elif "projectID" in feedbackData:
+            feedback_objs = Feedback.objects.filter(projectID=feedbackData["projectID"])
+        elif "userID" in feedbackData:
+            feedback_objs = Feedback.objects.filter(userID=feedbackData["userID"])
+        else:
+            return {
+                "message": "Need an id, taskID, projectID, or userID property."
+            }, status.HTTP_400_BAD_REQUEST
 
-        try:
-            if len(feedbackData) == 1:
-                return { "message": "Need to have ONLY a id, taskID, or projectID property." }, status.HTTP_400_BAD_REQUEST
-            
-            feedback_objs = []
-
-            if "id" in feedbackData:  
-                feedback_objs = Feedback.objects.get(id=feedbackData["id"])  
-            elif "taskID" in feedbackData:  
-                feedback_objs = Feedback.objects.filter(taskID=feedbackData["taskID"])  
-            elif "projectID" in feedbackData:  
-                feedback_objs = Feedback.objects.filter(projectID=feedbackData["projectID"])  
-
-            if not feedback_objs:
-                return {
-                    "message": "No feedback was found or you do not have authorization."
-                }, status.HTTP_400_BAD_REQUEST
-            serializer = FeedbackSerializer(feedback_objs, many=True)
-            return serializer.data, status.HTTP_200_OK
-        except Exception as e:
-            print("Error:", e)
-            return {"message": e}, status.HTTP_500_INTERNAL_SERVER_ERROR
+        if not feedback_objs:
+            return {
+                "message": "No feedback was found or you do not have authorization."
+            }, status.HTTP_400_BAD_REQUEST
+        serializer = FeedbackSerializer(feedback_objs, many=True)
+        return serializer.data, status.HTTP_200_OK
 
     @staticmethod
     def createFeedback(feedbackData, authorizationToken):
@@ -174,22 +167,25 @@ class FeedbackAPIView(APIView):
         @param authorizationToken      JWT authorization token.
         @return      A tuple of (response_data, http_status).
         """
-        #TODO: make use auth token to check if user is admin
-        if len(feedbackData) == 1:
-            return { "message": "Need to have ONLY a id, taskID, or projectID property." }, status.HTTP_400_BAD_REQUEST
-        
-        numberObjectsDeleted:int = 0
+        if "id" in feedbackData:
+            queryset = Feedback.objects.filter(id=feedbackData["id"])
+        elif "taskID" in feedbackData:
+            queryset = Feedback.objects.filter(taskID=feedbackData["taskID"])
+        elif "projectID" in feedbackData:
+            queryset = Feedback.objects.filter(projectID=feedbackData["projectID"])
+        elif "userID" in feedbackData:
+            queryset = Feedback.objects.filter(userID=feedbackData["userID"])
+        else:
+            return {
+                "message": "Need an id, taskID, projectID, or userID property."
+            }, status.HTTP_400_BAD_REQUEST
 
-        if "id" in feedbackData:  
-            numberObjectsDeleted = Feedback.objects.get(id=feedbackData["id"]).delete()  
-        elif "taskID" in feedbackData:  
-            numberObjectsDeleted = Feedback.objects.filter(taskID=feedbackData["taskID"]).delete()  
-        elif "projectID" in feedbackData:  
-            numberObjectsDeleted = Feedback.objects.filter(projectID__all=feedbackData["projectID"], **feedbackData).delete()  
-        elif "userID" in feedbackData:  
-            numberObjectsDeleted = Feedback.objects.filter(userID=feedbackData["userID"]).delete()  
+        numberObjectsDeleted, _ = queryset.delete()
 
         if numberObjectsDeleted == 0:
-            return { "message": "No associated feedback found." }, status.HTTP_404_NOT_FOUND
+            return {"message": "No associated feedback found."}, status.HTTP_404_NOT_FOUND
 
-        return { "message": str(numberObjectsDeleted) + " associated feedback items deleted successfully" }, status.HTTP_200_OK
+        return {
+            "message": str(numberObjectsDeleted)
+            + " associated feedback items deleted successfully"
+        }, status.HTTP_200_OK

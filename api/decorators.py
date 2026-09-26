@@ -1,5 +1,7 @@
+from cryptography.fernet import InvalidToken
 from django.http import JsonResponse
 import jwt
+
 from api.models import User
 from api.utils import decodeApiKey, decryptApiKey, getAuthorizationToken
 
@@ -31,7 +33,6 @@ def apiKeyRequired(function):
         # Verify that the user is in the database + API key matches (Can check perms if needed too)
         userID = decodedKey.get("userID")
         try:
-
             user = User.objects.filter(id=userID).first()
 
             if not user:
@@ -39,14 +40,13 @@ def apiKeyRequired(function):
                     {"Error": "No user associated with that token"}, status=401
                 )
 
-            # Check API keys match
-            decryptedApiToken = decryptApiKey(user["apiKey"])
+            decryptedApiToken = decryptApiKey(user.apiKey)
             if token != decryptedApiToken:
                 return JsonResponse(
                     {"Error": "No user associated with that token"}, status=401
                 )
 
-        except Exception:
+        except (InvalidToken, TypeError, ValueError):
             return JsonResponse(
                 {"Error": "Could not find user associated with token"}, status=401
             )

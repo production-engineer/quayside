@@ -1,8 +1,8 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from mongoengine.errors import NotUniqueError
-from mongoengine import Q
+from django.db import IntegrityError
+from django.db.models import Q
 from django.utils.decorators import method_decorator
 
 from api.models import User
@@ -223,31 +223,27 @@ class UsersAPIView(APIView):
 
         serializer = UserSerializer(data=userData)
 
-        try:
-            serializer.is_valid(raise_exception=True)
-            user = User.objects.create(**serializer.validated_data)
-            response_data = UserSerializer(user).data
-            return response_data, status.HTTP_201_CREATED
+        if not serializer.is_valid():
+            if "email" in serializer.errors:
+                return {
+                    "error": "Email address is already in use."
+                }, status.HTTP_400_BAD_REQUEST
+            return serializer.errors, status.HTTP_400_BAD_REQUEST
 
-        except NotUniqueError as e:
+        try:
+            user = User.objects.create(**serializer.validated_data)
+        except IntegrityError as e:
             error_message = str(e)
             if "email" in error_message:
                 return {
                     "error": "Email address is already in use."
                 }, status.HTTP_400_BAD_REQUEST
-            #           elif 'username' in error_message:
-            #               return Response({'error': 'Username is already taken.'}, status=status.HTTP_400_BAD_REQUEST)
-
             return {
                 "error": "Duplicate key error.",
                 "details": error_message,
             }, status.HTTP_400_BAD_REQUEST
 
-        except Exception as e:
-            return {
-                "error": "Internal server error.",
-                "details": str(e),
-            }, status.HTTP_500_INTERNAL_SERVER_ERROR
+        return UserSerializer(user).data, status.HTTP_201_CREATED
 
     @staticmethod
     def getAuthenticatedUser(userData):

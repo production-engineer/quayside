@@ -1,16 +1,29 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
-from bson.objectid import ObjectId
 from django.utils.decorators import method_decorator
-from django.core.exceptions import ObjectDoesNotExist
 
 from api.decorators import apiKeyRequired
-from api.serializers import ProjectSerializer
-from api.views.v1.tasks import TasksAPIView
-from api.models import Project
+from api.models import Project, Status
 from api.utils import getAuthorizationToken, decodeApiKey
-from api.views.v1.projects import ProjectsAPIView
+
+
+def _member_project(projectID, authorizationToken):
+    """Returns (project, error_response, http_status). On success error_response is None."""
+    userID = decodeApiKey(authorizationToken).get("userID")
+    try:
+        project = Project.objects.get(id=projectID)
+    except Project.DoesNotExist:
+        return None, {"message": "Project not found."}, status.HTTP_404_NOT_FOUND
+    if userID not in project.userIDs:
+        return None, {
+            "message": "User not authorized for this project."
+        }, status.HTTP_403_FORBIDDEN
+    return project, None, status.HTTP_200_OK
+
+
+def _serialize(stat):
+    return {"id": stat.id, "name": stat.name, "color": stat.color, "order": stat.order}
 
 
 @method_decorator(
@@ -18,21 +31,20 @@ from api.views.v1.projects import ProjectsAPIView
 )  # dispatch protects all HTTP requests coming in
 class StatusesAPIView(APIView):
     """
-    Create, get, and update a project status.
+    Create, get, update, and delete a project status.
     """
 
     def get(self, request):
         """
-        Retrieves a list of Status objects for a Project from MongoDB, filtered based on query parameters
+        Retrieves a list of Status objects for a Project, filtered based on query parameters
         provided in the request. Requires 'apiToken' passed in auth header or cookies. Only gets
-        projects where UserID matches.
+        statuses for projects where UserID matches.
 
         @param {HttpRequest} request - The request object.
             The query parameters can be:
-                - projectId (objectID str)
+                - projectID (objectID str)
 
-        @return A Response object containing a JSON array of serialized Status objects that
-        match the query parameters.
+        @return A Response object containing a JSON array of serialized Status objects.
 
         @example Javascript:
             fetch('quayside.app/api/v1/statuses?projectID=1234');
@@ -44,14 +56,14 @@ class StatusesAPIView(APIView):
 
     def post(self, request):
         """
-        Creates status(es). Requires 'apiToken' passed in auth header or cookies.
+        Creates a status. Requires 'apiToken' passed in auth header or cookies.
 
         @param {HttpRequest} request - The request object.
             The request body can contain:
-                - id (objectID str)
+                - projectID (objectID str)
                 - name (str)
                 - color (str)
-                - order (str)
+                - order (int)
         @param {str} authorizationToken - JWT authorization token.
 
         @return A response telling you if the status was created.
@@ -65,31 +77,30 @@ class StatusesAPIView(APIView):
             });
 
         """
-        responseData, httpStatus = self.createProjects(
+        responseData, httpStatus = self.createStatus(
             request.data, getAuthorizationToken(request)
         )
         return Response(responseData, status=httpStatus)
 
     def put(self, request):
         """
-        Updates a single project.
+        Updates a single status.
         Requires 'apiToken' passed in auth header or cookies.
 
-
         @param {HttpRequest} request - The request object.
-                @param {HttpRequest} request - The request object.
             The request body can contain:
+                - projectID (objectID str)
                 - id (objectID str)
                 - name (str)
                 - color (str)
-                - order (str)
-        @return: A Response object with the updated task data or an error message.
+                - order (int)
+        @return: A Response object with the updated status data or an error message.
 
         @example javascript
-            await fetch(`/api/v1/statuses?id=1234`, {
+            await fetch(`/api/v1/statuses`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json'},
-                body: JSON.stringify({ "projectID": "5AC9942376", "name":  "backlog", "color": "A4279", "order":  2 }),
+                body: JSON.stringify({ "projectID": "5AC9942376", "id": "1234", "name":  "backlog", "color": "A4279", "order":  2 }),
             });
 
         """
@@ -104,17 +115,17 @@ class StatusesAPIView(APIView):
 
         @param {HttpRequest} request - The request object.
             The query parameters MUST be:
+                - projectID (objectID str) [REQUIRED]
                 - id (objectID str) [REQUIRED]
 
         @return: A Response object with a success or an error message.
 
         @example javascript:
 
-            fetch(`/api/v1/statuses?id=1234`, {
+            fetch(`/api/v1/statuses?projectID=5678&id=1234`, {
                 method: 'DELETE',
             });
         """
-
         responseData, httpStatus = self.deleteStatus(
             request.query_params, getAuthorizationToken(request)
         )
@@ -123,165 +134,107 @@ class StatusesAPIView(APIView):
     @staticmethod
     def getStatuses(statusData, authorizationToken):
         """
-        Service API function that can be called internally as well as through the API to get
-        project data based on input data.
+        Service API function that returns the statuses for a member's project.
 
-        @param projectData      Dict for a single project.
+        @param statusData      Dict containing 'projectID'.
         @param authorizationToken      JWT authorization token.
         @return      A tuple of (response_data, http_status).
         """
+        if "projectID" not in statusData:
+            return {
+                "message": "Parameter 'projectID' required."
+            }, status.HTTP_400_BAD_REQUEST
 
-        try:
-            # Only get project where user is a contributor
-            data, httpsCode = ProjectsAPIView.getProjects(
-                {"id": statusData["projectID"] }, authorizationToken
-            )
-            data = data[0]
+        project, error, httpStatus = _member_project(
+            statusData["projectID"], authorizationToken
+        )
+        if error is not None:
+            return error, httpStatus
 
-            if httpsCode != status.HTTP_200_OK and httpsCode != status.HTTP_404_NOT_FOUND:
-                return data["message"], httpsCode
-            
-            if "taskStatuses" not in data or not data["taskStatuses"]:
-                return { "message": "No status associated with project" }, status.HTTP_404_NOT_FOUND
-            
-            return data["taskStatuses"], status.HTTP_200_OK
-        except Exception as e:
-            print("Error:", e)
-            return {"message": e}, status.HTTP_500_INTERNAL_SERVER_ERROR
-
-    @staticmethod
-    def updateStatus(statusData, authorizationToken):
-        """
-        Service API function that can be called internally as well as through the API to update
-        project data based on input data.
-
-        @param projectData      Dict for a single project.
-        @param authorizationToken      JWT authorization token.
-        @return      A tuple of (response_data, http_status).
-        """
-
-        try:
-            # Only get project where user is a contributor
-            data, httpsCode = ProjectsAPIView.getProjects(
-                {"id": statusData["projectID"]}, authorizationToken
-            )
-            data=data[0]
-
-            if httpsCode != status.HTTP_200_OK and httpsCode != status.HTTP_404_NOT_FOUND:
-                return data["message"], httpsCode
-
-            if "taskStatuses" not in data or not data["taskStatuses"]:
-                return {
-                    "message": "No status associated with project"
-                }, status.HTTP_204_NO_CONTENT
-            
-            for stat in data["taskStatuses"]:
-                if stat["id"] == statusData["id"]:
-                    statusData.pop("projectID")
-                    stat = statusData
-                    serializer = ProjectSerializer(data=data)
-
-                    if serializer.is_valid():
-                        serializer.save()  # Updates projects
-                        return {"message": "Successfully updated status"}, status.HTTP_200_OK
-
-                    return serializer.errors, status.HTTP_400_BAD_REQUEST
-
-            return {"message": "Failed to update status"}, status.HTTP_200_OK
-        
-        except Exception as e:
-            print("Error:", e)
-            return {"message": e}, status.HTTP_500_INTERNAL_SERVER_ERROR
+        statuses = [_serialize(stat) for stat in project.taskStatuses.all()]
+        return statuses, status.HTTP_200_OK
 
     @staticmethod
     def createStatus(statusData, authorizationToken):
         """
-        Service API function that can be called internally as well as through the API to create
-        project(s) based on input data.
+        Service API function that creates a status row for a member's project.
 
-        @param projectData      Dict for a single project dict or list of dicts for multiple tasks.
+        @param statusData      Dict containing 'projectID', 'name', 'color', 'order'.
         @param authorizationToken      JWT authorization token.
         @return      A tuple of (response_data, http_status).
         """
+        if "projectID" not in statusData:
+            return {
+                "message": "Parameter 'projectID' required."
+            }, status.HTTP_400_BAD_REQUEST
+
+        project, error, httpStatus = _member_project(
+            statusData["projectID"], authorizationToken
+        )
+        if error is not None:
+            return error, httpStatus
+
+        stat = Status.objects.create(
+            project=project,
+            name=statusData["name"],
+            color=statusData["color"],
+            order=statusData["order"],
+        )
+        return _serialize(stat), status.HTTP_201_CREATED
+
+    @staticmethod
+    def updateStatus(statusData, authorizationToken):
+        """
+        Service API function that updates a status row for a member's project.
+
+        @param statusData      Dict containing 'projectID', 'id', and fields to update.
+        @param authorizationToken      JWT authorization token.
+        @return      A tuple of (response_data, http_status).
+        """
+        if "projectID" not in statusData or "id" not in statusData:
+            return {
+                "message": "Parameters 'projectID' and 'id' required."
+            }, status.HTTP_400_BAD_REQUEST
+
+        project, error, httpStatus = _member_project(
+            statusData["projectID"], authorizationToken
+        )
+        if error is not None:
+            return error, httpStatus
+
         try:
-            # Only get project where user is a contributor
-            data, httpsCode = ProjectsAPIView.getProjects(
-                {"id": statusData["projectID"]}, authorizationToken
-            )
-            data=data[0]
+            stat = project.taskStatuses.get(id=statusData["id"])
+        except Status.DoesNotExist:
+            return {"message": "Status not found."}, status.HTTP_404_NOT_FOUND
 
-            if httpsCode != status.HTTP_200_OK and httpsCode != status.HTTP_404_NOT_FOUND:
-                return data["message"], httpsCode
-
-            if "taskStatuses" not in data or not data["taskStatuses"]:
-                return {
-                    "message": "No status associated with project"
-                }, status.HTTP_204_NO_CONTENT
-            
-            for stat in data["taskStatuses"]:
-                if stat["name"] == statusData["name"]:
-                    return {
-                        "message": "Status with name already exists"
-                    }, status.HTTP_403_FORBIDDEN
-                
-                statusData.pop("projectID")
-                data["taskStatuses"].append(statusData)
-
-            serializer = ProjectSerializer(data=data)
-
-            if serializer.is_valid():
-                serializer.save()  # Updates projects
-                return {"message":"Successfully created status"}, status.HTTP_200_OK
-            
-            return {"message":serializer.errors}, status.HTTP_400_BAD_REQUEST
-
-        except Exception as e:
-            print("Error:", e)
-            return {"message": e}, status.HTTP_500_INTERNAL_SERVER_ERROR
+        for field in ("name", "color", "order"):
+            if field in statusData:
+                setattr(stat, field, statusData[field])
+        stat.save()
+        return _serialize(stat), status.HTTP_200_OK
 
     @staticmethod
     def deleteStatus(statusData, authorizationToken):
         """
-        Service API function that can be called internally as well as through the API to delete
-        project and all associated tasks.
+        Service API function that deletes a status row from a member's project.
 
-        @param projectData      Dict for a single project
+        @param statusData      Dict containing 'projectID' and 'id'.
         @param authorizationToken      JWT authorization token.
         @return      A tuple of (response_data, http_status).
         """
-        try:
-            # Only get project where user is a contributor
-            data, httpsCode = ProjectsAPIView.getProjects(
-                {"id": statusData["projectID"]}, authorizationToken
-            )
-            data=data[0]
+        if "projectID" not in statusData or "id" not in statusData:
+            return {
+                "message": "Parameters 'projectID' and 'id' required."
+            }, status.HTTP_400_BAD_REQUEST
 
-            if httpsCode != status.HTTP_200_OK and httpsCode != status.HTTP_404_NOT_FOUND:
-                return data["message"], httpsCode
+        project, error, httpStatus = _member_project(
+            statusData["projectID"], authorizationToken
+        )
+        if error is not None:
+            return error, httpStatus
 
-            if "taskStatuses" not in data or not data["taskStatuses"]:
-                return {
-                    "message": "No status associated with project"
-                }, status.HTTP_204_NO_CONTENT
-            
-            taskFound = False
-            for i, stat in enumerate(data["taskStatuses"]):
-                if stat["id"] == statusData["id"]:
-                    data["taskStatuses"].pop(i)
-                    taskFound = True
-                    break
+        deleted, _ = project.taskStatuses.filter(id=statusData["id"]).delete()
+        if deleted == 0:
+            return {"message": "Status not found."}, status.HTTP_404_NOT_FOUND
 
-            if not taskFound:
-                return { "message": "No status associated with project" }, status.HTTP_404_NOT_FOUND
-
-            serializer = ProjectSerializer(data=data)
-
-            if serializer.is_valid():
-                serializer.save()  # Updates projects
-                return {"message":"Successfully deleted status"}, status.HTTP_200_OK
-            
-            return {"message":serializer.errors}, status.HTTP_400_BAD_REQUEST
-
-        except Exception as e:
-            print("Error:", e)
-            return {"message": e}, status.HTTP_500_INTERNAL_SERVER_ERROR
+        return {"message": "Successfully deleted status"}, status.HTTP_200_OK

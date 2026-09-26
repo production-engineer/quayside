@@ -35,7 +35,7 @@ def heading(text: str) -> str | None:
     return None
 
 
-def parse(path: Path, text: str, me: str, last_commit_day) -> WorkItem:
+def parse(path: Path, text: str, me: str, last_commit_day, today: date) -> WorkItem:
     match = FILENAME.match(path.name)
     filename_day, slug, suffix = match.groups()
     evidence = []
@@ -46,7 +46,7 @@ def parse(path: Path, text: str, me: str, last_commit_day) -> WorkItem:
         evidence.append(f"filename says {suffix}")
     created = parse_day(filename_day)
     banner_lines = banners(text)
-    activity = [day for day in [created, last_commit_day(path)] if day]
+    activity = [created, last_commit_day(path)]
     claimed_by = None
     done_hints = []
     for line in banner_lines:
@@ -71,10 +71,10 @@ def parse(path: Path, text: str, me: str, last_commit_day) -> WorkItem:
         status=status,
         owner=claimed_by if claimed_by != UNBANNERED_CLAIM else None,
         created=created,
-        last_activity=max(activity) if activity else None,
+        last_activity=max([day for day in activity if day and day <= today], default=None),
         links=signals.find_links(text),
         refs=signals.find_refs(text),
-        blocked_on=signals.blocked_on(text),
+        blocked_on="filename says blocked" if suffix == "blocked" else signals.blocked_on(text),
         waiting_on_erik=signals.erik_waits(text, me),
         critical_hints=signals.critical_hints(text),
         done_hints=done_hints if status != "done" else [],
@@ -83,7 +83,8 @@ def parse(path: Path, text: str, me: str, last_commit_day) -> WorkItem:
     )
 
 
-def collect(keep_dir: Path, me: str = "Erik", last_commit_day=git_last_commit_day) -> SourceResult:
+def collect(keep_dir: Path, me: str = "Erik", last_commit_day=git_last_commit_day,
+            today: date | None = None) -> SourceResult:
     keep_dir = Path(keep_dir)
     if not keep_dir.is_dir():
         return SourceResult("portals", [], [f"portal folder not found: {keep_dir}"])
@@ -96,5 +97,5 @@ def collect(keep_dir: Path, me: str = "Erik", last_commit_day=git_last_commit_da
         except OSError as problem:
             errors.append(f"could not read {path.name}: {problem}")
             continue
-        items.append(parse(path, text, me, last_commit_day))
+        items.append(parse(path, text, me, last_commit_day, today or date.today()))
     return SourceResult("portals", items, errors)

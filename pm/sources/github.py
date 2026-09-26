@@ -14,6 +14,7 @@ DEFAULT_MAX_PAGES = 10
 BOT_MARKERS = ("[bot]", "dependabot", "renovate", "github-actions")
 PRIORITY_LABELS = {"critical": "critical", "p0": "critical", "high": "high", "p1": "high", "medium": "medium",
                    "p2": "medium", "low": "low", "p3": "low"}
+PRIORITY_RANK = ["low", "medium", "high", "critical"]
 CLOSING = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+(?:([\w.-]+/[\w.-]+))?#(\d+)", re.IGNORECASE)
 REF_KEY = re.compile(r"^([\w.-]+)/([\w.-]+)#(\d+)$")
 
@@ -87,6 +88,16 @@ def reviewers(connection) -> list[str]:
     return found
 
 
+def label_tokens(label: str) -> list[str]:
+    return [token for token in re.split(r"[\s:/_-]+", label.lower()) if token and token != "priority"]
+
+
+def label_priority(labels: list[str]) -> str | None:
+    found = [PRIORITY_LABELS[tokens[0]] for tokens in map(label_tokens, labels)
+             if len(tokens) == 1 and tokens[0] in PRIORITY_LABELS]
+    return max(found, key=PRIORITY_RANK.index, default=None)
+
+
 def closing_refs(body: str, repo: str) -> list[str]:
     return sorted({f"{(qualifier or repo)}#{number}".lower() for qualifier, number in CLOSING.findall(body)})
 
@@ -113,12 +124,7 @@ def normalize(node: dict, viewer: str | None, me: str) -> WorkItem:
         waits.append("your PR is ready and unmerged")
     if status != "done":
         waits.extend(signals.erik_waits(body, me))
-    priority = None
-    for label in labels:
-        for token in re.split(r"[\s:/_-]+", label):
-            if token in PRIORITY_LABELS:
-                priority = PRIORITY_LABELS[token]
-    blocked = next((f"label: {label}" for label in labels if "blocked" in label), None)
+    blocked = next((f"label: {label}" for label in labels if label_tokens(label) == ["blocked"]), None)
     assignees = logins(node.get("assignees"))
     return WorkItem(
         source="github",
@@ -135,7 +141,7 @@ def normalize(node: dict, viewer: str | None, me: str) -> WorkItem:
         blocked_on=blocked or (signals.blocked_on(body) if status != "done" else None),
         waiting_on_erik=[] if is_bot(author) else waits,
         critical_hints=signals.critical_hints(body) if status != "done" else [],
-        priority=priority,
+        priority=label_priority(labels),
         closes=closing_refs(body, repo) if is_pull and node.get("mergedAt") else [],
         evidence=[f"GitHub {node['__typename']} {node.get('state', '').lower()}"
                   + (" draft" if node.get("isDraft") else "")],

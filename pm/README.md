@@ -45,7 +45,7 @@ Each source is one module under `pm/sources/` with a `collect(...)` function tha
 | GitHub | `github.py` | Open, draft, ready for review, merged, closed | `updatedAt` |
 | RH Task Tracker CSV | `tracker.py` | `Status` column (To Do, Backlog, In progress, Done) | Latest of Date added, Last update, dates in Status Update |
 
-GitHub is read with four GraphQL searches per owner: open tickets, open PRs, PRs merged in the window, and tickets closed in the window. Any `owner/repo#N` that another source mentions but the searches did not return is then fetched one by one (at most 150), so cross-source checks see its real state. Ticket and PR bodies are scanned for signals and then dropped; they are never written to the snapshot.
+GitHub is read with four GraphQL searches per owner: open tickets, open PRs, PRs merged in the window, and tickets closed in the window. Any `owner/repo#N` that another source mentions but the searches did not return is then fetched one by one (at most 150), so cross-source checks see its real state. Excluded repos are never looked up. Ticket and PR bodies are scanned for signals and then dropped; they are never written to the snapshot.
 
 The tracker adapter maps columns by header name, so reordered columns still work. The tool itself never calls the Google API; export the sheet as CSV and pass its path.
 
@@ -59,7 +59,7 @@ Every source produces `WorkItem` records (`pm/model.py`):
 | `title`, `project`, `kind` | What it is |
 | `status` | One of `open`, `backlog`, `in_progress`, `review`, `paused`, `done`, `unknown` |
 | `owner`, `claimed_by` | Assignee or claiming session, when known |
-| `created`, `last_activity` | Calendar days; unparseable dates become empty rather than guessed |
+| `created`, `last_activity` | Calendar days in Alaska time; unparseable dates become empty rather than guessed, and dates after the reference day never count as activity |
 | `links`, `refs` | http(s) links, and GitHub references normalized to `owner/repo#N` |
 | `blocked_on` | First "blocked on", "blocked by", or "depends on" phrase, or a `blocked` label |
 | `waiting_on_erik` | Evidence snippets that the next move is Erik's |
@@ -121,6 +121,8 @@ This version makes no LLM call. The seam is the snapshot: `snapshot.json` (schem
 - Short refs like `repo#12` resolve only when exactly one owner has a repo by that name; bare `#12` and `PR #73` are ignored.
 - GitHub search returns at most 1000 results per query; the report says when a query was truncated.
 - TASKS.md has no per-task activity date, so an old task always reads as stuck.
+- Lookups and portal git dates run one process at a time. A live run takes about a minute, mostly GitHub search.
+- The default `--out` is a session scratchpad path on this Mac; pass `--out` anywhere else.
 - Owners, ages, and statuses are only as current as the sources. The tool has no memory between runs.
 
 ## Tests

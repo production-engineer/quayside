@@ -1,5 +1,6 @@
 import csv
 import re
+from datetime import date
 from pathlib import Path
 
 from pm import signals
@@ -34,7 +35,7 @@ def column_map(headers: list[str]) -> dict[str, str]:
     return mapping
 
 
-def row_item(position: int, row: dict, columns: dict, me: str) -> WorkItem | None:
+def row_item(position: int, row: dict, columns: dict, me: str, today: date) -> WorkItem | None:
     def cell(key):
         header = columns.get(key)
         return (row.get(header) or "").strip() if header else ""
@@ -49,7 +50,8 @@ def row_item(position: int, row: dict, columns: dict, me: str) -> WorkItem | Non
     description = cell("description")
     body = "\n".join([title, description, update])
     lead = cell("lead") or None
-    activity = [day for day in (parse_day(cell("added")), parse_day(cell("updated")), *signals.dates_in(update)) if day]
+    activity = [day for day in (parse_day(cell("added")), parse_day(cell("updated")), *signals.dates_in(update))
+                if day and day <= today]
     priority = cell("priority").lower()
     waits = signals.erik_waits(body, me)
     if lead and lead.split()[0].lower() == me.lower():
@@ -75,7 +77,7 @@ def row_item(position: int, row: dict, columns: dict, me: str) -> WorkItem | Non
     )
 
 
-def collect(path: Path, me: str = "Erik") -> SourceResult:
+def collect(path: Path, me: str = "Erik", today: date | None = None) -> SourceResult:
     path = Path(path)
     try:
         with path.open(encoding="utf-8-sig", errors="replace", newline="") as handle:
@@ -89,5 +91,5 @@ def collect(path: Path, me: str = "Erik") -> SourceResult:
             rows = list(reader)
     except (OSError, csv.Error) as problem:
         return SourceResult("tracker", [], [f"could not read tracker CSV {path}: {problem}"])
-    items = [item for position, row in enumerate(rows, start=2) if (item := row_item(position, row, columns, me))]
+    items = [item for position, row in enumerate(rows, start=2) if (item := row_item(position, row, columns, me, today or date.today()))]
     return SourceResult("tracker", items, [])

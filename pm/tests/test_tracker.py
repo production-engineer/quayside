@@ -62,6 +62,12 @@ class TrackerAdapter(unittest.TestCase):
     def test_status_update_dates_count_as_activity(self):
         self.assertEqual(self.items(INVENTED_ROWS)["tracker:2"].last_activity, date(2026, 9, 10))
 
+    def test_future_dates_are_not_activity(self):
+        text = "Task #,Task name,Status,Status Update,Date added\n1,Invented,To Do,waiting on vendor due 2026-12-01,2026-08-01\n"
+        self.path.write_text(text, encoding="utf-8")
+        item = tracker.collect(self.path, today=date(2026, 9, 26)).items[0]
+        self.assertEqual(item.last_activity, date(2026, 8, 1))
+
     def test_shipped_status_update_is_a_done_hint(self):
         items = self.items(INVENTED_ROWS)
         self.assertTrue(items["tracker:5"].done_hints)

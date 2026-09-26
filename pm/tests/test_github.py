@@ -104,6 +104,19 @@ class GithubAdapter(unittest.TestCase):
         self.assertEqual(item.blocked_on, "label: blocked")
         self.assertEqual(item.links, ["https://github.com/invented-org/widget/issues/3"])
 
+    def test_unblocked_label_is_not_blocked(self):
+        fake = FakeGh({"is:issue is:open": [page([issue(3, "Invented", labels={"nodes": [{"name": "unblocked"}, {"name": "not-blocked"}]})])]})
+        self.assertIsNone(collect(fake).items[0].blocked_on)
+
+    def test_highest_pure_priority_label_wins(self):
+        fake = FakeGh({"is:issue is:open": [page([
+            issue(3, "Invented", labels={"nodes": [{"name": "P0"}, {"name": "low-hanging-fruit"}]}),
+            issue(4, "Invented", labels={"nodes": [{"name": "high-impact"}, {"name": "medium-effort"}]}),
+            issue(5, "Invented", labels={"nodes": [{"name": "priority: low"}, {"name": "priority/high"}]}),
+        ])]})
+        priorities = [item.priority for item in collect(fake).items]
+        self.assertEqual(priorities, ["critical", None, "high"])
+
     def test_pull_request_states(self):
         fake = FakeGh({"is:pr is:open": [page([pull(5, "Invented ready"), pull(6, "Invented draft", isDraft=True)])],
                        "is:merged": [page([pull(7, "Invented merged", state="MERGED", mergedAt="2026-09-20T20:00:00Z",

@@ -1,8 +1,10 @@
 import io
+import os
 import json
 import shutil
 import tempfile
 import unittest
+import unittest.mock
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
@@ -60,6 +62,45 @@ class Cli(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertFalse(self.out.exists())
         self.assertIn("inside the repository", stderr)
+
+    def test_tilde_output_path_is_expanded_before_writing(self):
+        home = self.base / "home"
+        home.mkdir()
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(self.base)
+        with unittest.mock.patch.dict("os.environ", {"HOME": str(home)}):
+            self.out = Path("~/pm-out")
+            code, _, _ = self.run_cli("--no-github")
+        self.assertEqual(code, 0)
+        self.assertTrue((home / "pm-out" / "snapshot.json").exists())
+        self.assertFalse((self.base / "~").exists())
+
+    def test_unwritable_output_is_a_clean_error(self):
+        blocker = self.base / "file"
+        blocker.write_text("invented", encoding="utf-8")
+        self.out = blocker / "out"
+        code, _, stderr = self.run_cli("--no-github")
+        self.assertEqual(code, 2)
+        self.assertIn("could not write", stderr)
+
+    def test_excluded_repos_are_not_looked_up(self):
+        (self.keep / "portal-2026-09-02-frozen-ref-not-started.md").write_text(
+            "# Invented\n\nSee invented-org/frozen#40 and invented-org/live#41.\n", encoding="utf-8")
+        calls = []
+
+        def fake(args):
+            calls.append(args)
+            if args[:2] == ["api", "user"]:
+                return "invented-erik\n"
+            if args[:2] == ["api", "graphql"]:
+                return json.dumps({"data": {"search": {"issueCount": 0, "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": []}}})
+            if args[:2] == ["repo", "list"]:
+                return "[]"
+            raise github.GhFailure("HTTP 404: Not Found")
+
+        self.run_cli("--owner", "invented-org", "--exclude-repo", "invented-org/frozen", gh=fake)
+        looked_up = [call[1] for call in calls if call[0] == "api" and call[1].startswith("repos/")]
+        self.assertEqual(looked_up, ["repos/invented-org/live/issues/41"])
 
     def test_rerenders_from_a_snapshot(self):
         self.run_cli("--no-github")

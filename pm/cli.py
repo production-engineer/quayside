@@ -61,9 +61,10 @@ def build_snapshot_dict(results: list[SourceResult], findings: dict, today: date
 
 
 def collect_sources(options, gh) -> list[SourceResult]:
-    results = [portals.collect(options.keep, me=options.me), tasks.collect(options.tasks, me=options.me)]
+    results = [portals.collect(options.keep, me=options.me, today=options.today),
+               tasks.collect(options.tasks, me=options.me)]
     if options.tracker_csv:
-        results.append(tracker.collect(options.tracker_csv, me=options.me))
+        results.append(tracker.collect(options.tracker_csv, me=options.me, today=options.today))
     if options.no_github:
         return results
     hub = github.collect(gh, owners=options.owner, exclude=options.exclude_repo or DEFAULT_EXCLUDED_REPOS,
@@ -72,7 +73,9 @@ def collect_sources(options, gh) -> list[SourceResult]:
     results.append(hub)
     for result in results:
         result.items = analyze.qualify_refs(result.items, hub.repos)
-    missing = analyze.unresolved_refs([item for result in results for item in result.items])
+    excluded = {repo.lower() for repo in options.exclude_repo or DEFAULT_EXCLUDED_REPOS}
+    missing = [ref for ref in analyze.unresolved_refs([item for result in results for item in result.items])
+               if ref.split("#", 1)[0] not in excluded]
     if missing and hub.viewer:
         found, errors = github.lookup(gh, missing[:MAX_LOOKUPS], viewer=hub.viewer, me=options.me)
         results.append(SourceResult("github-lookups", found, errors))
@@ -82,8 +85,7 @@ def collect_sources(options, gh) -> list[SourceResult]:
 
 
 def inside_repository(path: Path) -> bool:
-    resolved = path.expanduser().resolve()
-    return resolved == REPO_ROOT or REPO_ROOT in resolved.parents
+    return path == REPO_ROOT or REPO_ROOT in path.parents
 
 
 def write_outputs(snapshot: dict, out: Path, top: int) -> list[Path]:
@@ -100,6 +102,7 @@ def write_outputs(snapshot: dict, out: Path, top: int) -> list[Path]:
 
 def main(argv: list[str] | None = None, gh=github.gh) -> int:
     options = parser().parse_args(argv)
+    options.out = options.out.expanduser().resolve()
     if inside_repository(options.out):
         print(f"refusing to write inside the repository ({REPO_ROOT}); pick an --out folder outside it", file=sys.stderr)
         return 2
@@ -112,6 +115,11 @@ def main(argv: list[str] | None = None, gh=github.gh) -> int:
         for name, source in snapshot["sources"].items():
             for error in source["errors"]:
                 print(f"{name}: {error}", file=sys.stderr)
-    for path in write_outputs(snapshot, options.out, options.top):
+    try:
+        written = write_outputs(snapshot, options.out, options.top)
+    except OSError as problem:
+        print(f"could not write to {options.out}: {problem}", file=sys.stderr)
+        return 2
+    for path in written:
         print(path)
     return 0

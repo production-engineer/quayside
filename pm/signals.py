@@ -49,8 +49,13 @@ def snippet(text: str, match: re.Match) -> str:
     return " ".join(words)
 
 
+def granted(text: str, match: re.Match) -> bool:
+    return text[max(0, match.start() - 5):match.start()].lower() == "with "
+
+
 def matches(text: str, patterns: list[re.Pattern]) -> list[str]:
-    hits = sorted((match for pattern in patterns for match in pattern.finditer(text)), key=lambda match: match.start())
+    hits = sorted((match for pattern in patterns for match in pattern.finditer(text) if not granted(text, match)),
+                  key=lambda match: match.start())
     found, reach = [], -1
     for match in hits:
         if match.start() > reach:

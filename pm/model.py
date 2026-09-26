@@ -1,12 +1,14 @@
 from dataclasses import dataclass, field, fields
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 DATE_FIELDS = ("created", "last_activity")
+HOME_ZONE = ZoneInfo("America/Anchorage")
 
 
 def parse_day(value) -> date | None:
     if isinstance(value, datetime):
-        return value.astimezone().date() if value.tzinfo else value.date()
+        return value.astimezone(HOME_ZONE).date() if value.tzinfo else value.date()
     if isinstance(value, date):
         return value
     if not isinstance(value, str):
@@ -20,7 +22,7 @@ def parse_day(value) -> date | None:
         moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
         return None
-    return moment.astimezone().date() if moment.tzinfo else moment.date()
+    return moment.astimezone(HOME_ZONE).date() if moment.tzinfo else moment.date()
 
 
 @dataclass

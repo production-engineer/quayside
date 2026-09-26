@@ -103,6 +103,16 @@ class PortalAdapter(unittest.TestCase):
         self.assertEqual(item.status, "paused")
         self.assertTrue(item.waiting_on_erik)
 
+    def test_blocked_suffix_sets_blocked_on(self):
+        write(self.folder, "portal-2026-09-20-stalled-blocked.md", "# Invented stalled work\n")
+        item = self.only()
+        self.assertEqual((item.status, item.blocked_on), ("open", "filename says blocked"))
+
+    def test_future_banner_dates_are_not_activity(self):
+        write(self.folder, "portal-2026-09-01-resume-paused.md", "# Invented\n\n> **Paused until 2026-10-15.**\n")
+        result = portals.collect(self.folder, last_commit_day=no_git, today=date(2026, 9, 26))
+        self.assertEqual(result.items[0].last_activity, date(2026, 9, 1))
+
     def test_git_commit_date_counts_as_activity(self):
         write(self.folder, "portal-2026-09-01-widget-export-not-started.md", INVENTED_NOT_STARTED)
         result = self.collect(last_commit_day=lambda path: date(2026, 9, 24))

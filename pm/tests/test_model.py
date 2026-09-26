@@ -54,6 +54,10 @@ class ParseDayValueLadder(unittest.TestCase):
     def test_utc_timestamp_midday_keeps_its_day(self):
         self.assertEqual(parse_day("2026-09-26T20:00:00Z"), date(2026, 9, 26))
 
+    def test_timestamps_use_alaska_time_whatever_the_host_zone(self):
+        self.assertEqual(parse_day("2026-09-26T06:00:00Z"), date(2026, 9, 25))
+        self.assertEqual(parse_day(datetime(2026, 9, 26, 6, 0, tzinfo=timezone.utc)), date(2026, 9, 25))
+
     def test_naive_timestamp(self):
         self.assertEqual(parse_day("2026-09-26T08:15:00"), date(2026, 9, 26))
 

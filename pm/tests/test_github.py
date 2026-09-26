@@ -127,6 +127,8 @@ class GithubAdapter(unittest.TestCase):
         merged = items["github:invented-org/widget#7"]
         self.assertEqual(merged.status, "done")
         self.assertEqual(merged.closes, ["invented-org/gadget#2", "invented-org/widget#3"])
+        self.assertEqual(merged.closed_on, date(2026, 9, 20))
+        self.assertIsNone(items["github:invented-org/widget#5"].closed_on)
 
     def test_waiting_on_erik_signals(self):
         fake = FakeGh({"is:pr is:open": [page([
@@ -245,8 +247,9 @@ class GithubAdapter(unittest.TestCase):
 
     def test_lookup_fetches_items_outside_the_search_window(self):
         items, errors = github.lookup(FakeGh(), ["invented-org/widget#8", "invented-org/widget#404"], viewer=VIEWER)
-        self.assertEqual([(item.id, item.kind, item.status) for item in items],
-                         [("github:invented-org/widget#8", "pr", "done")])
+        self.assertEqual([(item.id, item.kind, item.status, item.closed_on) for item in items],
+                         [("github:invented-org/widget#8", "pr", "done", date(2026, 8, 5))])
+        self.assertIn("merged", items[0].evidence[0])
         self.assertEqual(len(errors), 1)
 
     def test_lookup_ignores_malformed_keys(self):

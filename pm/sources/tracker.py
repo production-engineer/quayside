@@ -1,5 +1,4 @@
 import csv
-import re
 from datetime import date
 from pathlib import Path
 
@@ -19,9 +18,8 @@ COLUMN_PREFIXES = [
     ("updated", "last update"),
 ]
 STATUS_BY_LABEL = {"to do": "open", "todo": "open", "": "open", "backlog": "backlog", "in progress": "in_progress",
-                   "done": "done"}
+                   "done": "done", "shelved": "backlog"}
 PRIORITIES = {"critical", "high", "medium", "low"}
-DONE_WORDS = re.compile(r"(?<!not )(?<!not yet )\b(?:done|shipped|merged|live|completed?)\b", re.IGNORECASE)
 
 
 def column_map(headers: list[str]) -> dict[str, str]:
@@ -73,7 +71,6 @@ def row_item(position: int, row: dict, columns: dict, me: str, today: date) -> W
         waiting_on_erik=waits,
         critical_hints=signals.critical_hints(body),
         priority=priority if priority in PRIORITIES else None,
-        done_hints=[update[:160]] if status != "done" and DONE_WORDS.search(update) else [],
         evidence=[f"tracker status {cell('status') or '(blank)'}"],
     )
 

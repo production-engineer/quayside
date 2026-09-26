@@ -7,6 +7,10 @@ from pm.sources import tracker
 
 HEADER = "Task #,Task name,Task description (links here),Status,Status Update,Priority,Due date,Task lead assigned,Resources needed,Date added,Last update\n"
 
+REAL_SHAPE_HEADER = ('Task #,Task name,Task description (links here),"Status (To Do, Backlog, In progress, Done, Shelved)",'
+                     "Status Update,Priority,Due date,Task lead assigned,Resources needed,Date added,Last update,"
+                     "Number of times mentioned (this should increase the priority)\n")
+
 INVENTED_ROWS = HEADER + (
     '1,Invented intake form,"Build it. See invented-org/widget#4 and https://example.com/invented",To Do,,High,,Erik,,2026-08-01,2026-08-20\n'
     '2,Invented payroll check,Reconcile invented rows,In progress,2026-09-10: invented check started,Critical,,Invented Person,,2026-08-02,2026-09-01\n'
@@ -69,10 +73,25 @@ class TrackerAdapter(unittest.TestCase):
         item = tracker.collect(self.path, today=date(2026, 9, 26)).items[0]
         self.assertEqual(item.last_activity, date(2026, 8, 1))
 
-    def test_shipped_status_update_is_a_done_hint(self):
+    def test_prose_done_words_are_not_done_hints(self):
         items = self.items(INVENTED_ROWS)
-        self.assertTrue(items["tracker:5"].done_hints)
+        self.assertEqual(items["tracker:5"].done_hints, [])
         self.assertEqual(items["tracker:6"].done_hints, [])
+
+    def test_real_header_shape_with_shelved_status(self):
+        text = (REAL_SHAPE_HEADER
+                + '301,Invented shelved idea,Invented,Shelved,,Low,,,,2026-09-01,2026-09-02,\n'
+                + '302,Invented linked row,"See https://github.com/invented-org/widget/pull/8",To Do,'
+                  '"2026-09-10: invented first line\n2026-09-11: invented second line",High,,Invented Lead,,2026-09-01,2026-09-11,2\n'
+                + '303,Invented prose in priority,Invented,In progress,,NEXT ACTION 2026-09-17: invented long note,,,,2026-09-01,,\n')
+        items = self.items(text)
+        self.assertEqual(items["tracker:301"].status, "backlog")
+        self.assertIn("tracker status Shelved", items["tracker:301"].evidence)
+        linked = items["tracker:302"]
+        self.assertEqual((linked.status, linked.priority, linked.owner), ("open", "high", "Invented Lead"))
+        self.assertEqual(linked.status_refs, ["invented-org/widget#8"])
+        self.assertEqual(linked.last_activity, date(2026, 9, 11))
+        self.assertIsNone(items["tracker:303"].priority)
 
     def test_bad_dates_and_unknown_priority(self):
         item = self.items(INVENTED_ROWS)["tracker:7"]

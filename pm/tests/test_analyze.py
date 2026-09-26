@@ -155,6 +155,41 @@ class LooksDone(unittest.TestCase):
         items = [item("portal:x", source="portal", status="done", done_refs=["o/r#4"]), gh("o/r#4")]
         self.assertEqual(ids(analyze.analyze(items, TODAY)["looks_done"]), ["github:o/r#4"])
 
+    def test_tracker_row_whose_link_closed_after_it_was_written_is_strong(self):
+        items = [item("tracker:211", source="tracker", created=date(2026, 9, 1), status_refs=["o/r#1"]),
+                 gh("o/r#1", kind="pr", status="done", closed_on=date(2026, 9, 8), evidence=["GitHub PullRequest merged"])]
+        result = analyze.analyze(items, TODAY)
+        self.assertEqual(ids(result["looks_done"]), ["tracker:211"])
+        finding = result["looks_done"][0]
+        self.assertEqual(finding.score, analyze.STRONG_DONE)
+        self.assertIn("o/r#1 merged 2026-09-08", finding.reasons[0])
+        self.assertIn("after the row was added", finding.reasons[0])
+
+    def test_link_closed_the_day_the_row_was_written_is_weak(self):
+        items = [item("tracker:305", source="tracker", created=date(2026, 9, 7), status_refs=["o/r#47"]),
+                 gh("o/r#47", status="done", closed_on=date(2026, 9, 7), evidence=["GitHub Issue closed"])]
+        finding = analyze.analyze(items, TODAY)["looks_done"][0]
+        self.assertEqual(finding.score, analyze.WEAK_DONE)
+        self.assertIn("o/r#47 closed 2026-09-07", finding.reasons[0])
+        self.assertIn("may be background", finding.reasons[0])
+
+    def test_link_closed_the_evening_before_the_row_is_still_weak(self):
+        items = [item("tracker:238", source="tracker", created=date(2026, 9, 3), status_refs=["o/r#3"]),
+                 gh("o/r#3", kind="pr", status="done", closed_on=date(2026, 9, 2), evidence=["GitHub PullRequest merged"])]
+        finding = analyze.analyze(items, TODAY)["looks_done"][0]
+        self.assertEqual(finding.score, analyze.WEAK_DONE)
+
+    def test_link_closed_before_the_row_existed_is_background(self):
+        items = [item("tracker:9", source="tracker", created=date(2026, 9, 10), status_refs=["o/r#1"]),
+                 gh("o/r#1", status="done", closed_on=date(2026, 9, 1))]
+        self.assertEqual(analyze.analyze(items, TODAY)["looks_done"], [])
+
+    def test_strong_findings_sort_before_weak_ones(self):
+        items = [item("tracker:1", source="tracker", created=date(2026, 9, 7), status_refs=["o/r#1"]),
+                 item("tracker:2", source="tracker", created=date(2026, 9, 1), status_refs=["o/r#2"]),
+                 gh("o/r#1", status="done", closed_on=date(2026, 9, 7)), gh("o/r#2", status="done", closed_on=date(2026, 9, 8))]
+        self.assertEqual(ids(analyze.analyze(items, TODAY)["looks_done"]), ["tracker:2", "tracker:1"])
+
     def test_passing_mention_is_not_a_cross_check(self):
         items = [item("portal:x", source="portal", status="done", refs=["o/r#157"]), gh("o/r#157")]
         self.assertEqual(analyze.analyze(items, TODAY)["looks_done"], [])

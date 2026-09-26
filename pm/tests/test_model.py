@@ -106,6 +106,7 @@ class SnapshotRoundTrip(unittest.TestCase):
             status_refs=["invented-owner/invented-repo#3"],
             done_refs=["invented-owner/invented-repo#5"],
             bot_authored=True,
+            closed_on=date(2026, 9, 21),
             verdict="MERGE_READY",
             verdict_evidence="CI green, mergeable",
             evidence=["filename says in-progress"],

@@ -1,6 +1,6 @@
 import re
 from dataclasses import asdict, dataclass, replace
-from datetime import date
+from datetime import date, timedelta
 
 from pm import verdicts
 from pm.model import WorkItem, idle_days
@@ -19,6 +19,9 @@ CLAIMED_IDLE_DAYS = 7
 OPEN_IDLE_DAYS = 21
 ARCHIVE_DAYS = 90
 CLAIMED_STATUSES = {"in_progress", "review"}
+STRONG_DONE = 2
+BACKGROUND_SLACK = timedelta(days=1)
+WEAK_DONE = 1
 SHORT_REF = re.compile(r"^([\w.-]+)#(\d+)$")
 
 
@@ -63,6 +66,27 @@ def unresolved_refs(items: list[WorkItem]) -> list[str]:
     return sorted(wanted - set(known))
 
 
+def closure(other: WorkItem) -> str:
+    how = "merged" if any("merged" in note for note in other.evidence) else "closed"
+    return f"{other.github_key} {how} {other.closed_on or 'on an unknown day'}"
+
+
+def linked_closure_reason(item: WorkItem, linked: list[WorkItem]) -> str | None:
+    if not linked or not all(other.status == "done" for other in linked):
+        return None
+    days = [other.closed_on for other in linked]
+    if item.created and any(day and day < item.created - BACKGROUND_SLACK for day in days):
+        return None
+    names = ", ".join(closure(other) for other in linked)
+    if item.created and all(day and day > item.created for day in days):
+        return f"strong: every linked GitHub item closed after the row was added ({names})"
+    return f"weak: every linked GitHub item is closed, but within a day of when the row was added or on an unknown day, so the link may be background ({names})"
+
+
+def done_strength(reasons: list[str]) -> int:
+    return WEAK_DONE if all(reason.startswith("weak:") for reason in reasons) else STRONG_DONE
+
+
 def looks_done_reasons(item: WorkItem, index: dict[str, WorkItem], closers: dict[str, list[str]],
                        done_linkers: dict[str, list[str]], done_listers: dict[str, list[str]]) -> list[str]:
     if item.status == "done":
@@ -70,9 +94,9 @@ def looks_done_reasons(item: WorkItem, index: dict[str, WorkItem], closers: dict
     reasons = [f"says done: {hint}" for hint in item.done_hints]
     if item.source != "github":
         linked = [index[ref] for ref in item.status_refs if ref in index]
-        if linked and all(other.status == "done" for other in linked):
-            names = ", ".join(other.github_key for other in linked)
-            reasons.append(f"every linked GitHub item it names is closed or merged ({names})")
+        linked_reason = linked_closure_reason(item, linked)
+        if linked_reason:
+            reasons.append(linked_reason)
     for closer in closers.get(item.github_key or "", []):
         reasons.append(f"merged PR {closer} says it closes this")
     for linker in done_linkers.get(item.github_key or "", []):
@@ -163,7 +187,7 @@ def analyze(items: list[WorkItem], today: date, archive_days: int = ARCHIVE_DAYS
             continue
         done_reasons = looks_done_reasons(item, index, closers, done_linkers, done_listers)
         if done_reasons:
-            looks_done.append((idle or 0, Finding(item.id, len(done_reasons), done_reasons)))
+            looks_done.append((idle or 0, Finding(item.id, done_strength(done_reasons), done_reasons)))
             continue
         score, reasons = next_score(item, today)
         ranked.append(Finding(item.id, score, reasons))
@@ -183,7 +207,7 @@ def analyze(items: list[WorkItem], today: date, archive_days: int = ARCHIVE_DAYS
     return {
         "next": sorted(ranked, key=lambda finding: (-finding.score, -idle_of[finding.id], finding.id)),
         "stuck": [entry[-1] for entry in sorted(stuck, key=lambda entry: entry[:3])],
-        "looks_done": [finding for _, finding in sorted(looks_done, key=lambda entry: (-entry[0], entry[1].id))],
+        "looks_done": [finding for _, finding in sorted(looks_done, key=lambda entry: (-entry[1].score, -entry[0], entry[1].id))],
         "waiting_on_erik": sorted(waiting, key=lambda finding: (-finding.score, -idle_of[finding.id], finding.id)),
         "agent_prs": sorted(agent_prs, key=lambda finding: (-finding.score, finding.id)),
         "archive": sorted(archive, key=lambda finding: (-finding.score, finding.id)),

@@ -168,6 +168,7 @@ def normalize(node: dict, viewer: str | None, me: str) -> WorkItem:
         critical_hints=signals.critical_hints(body) if status != "done" else [],
         priority=label_priority(labels),
         closes=closing_refs(body, repo) if is_pull and node.get("mergedAt") else [],
+        closed_on=parse_day(node.get("mergedAt") or node.get("closedAt")) if status == "done" else None,
         agent_authored=agent,
         bot_authored=is_bot(author),
         evidence=[f"GitHub {node['__typename']} {node.get('state', '').lower()}"
@@ -270,7 +271,8 @@ def lookup(run, keys: list[str], viewer: str | None, me: str = "Erik") -> tuple[
             "number": record.get("number", int(number)),
             "title": record.get("title") or "",
             "url": record.get("html_url"),
-            "state": "OPEN" if record.get("state") == "open" else "CLOSED",
+            "state": "OPEN" if record.get("state") == "open" else "MERGED" if pull.get("merged_at") else "CLOSED",
+            "closedAt": record.get("closed_at"),
             "createdAt": record.get("created_at"),
             "updatedAt": record.get("updated_at"),
             "body": "",

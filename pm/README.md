@@ -46,7 +46,7 @@ Each source is one module under `pm/sources/` with a `collect(...)` function tha
 | Portal handoffs | `portals.py` | Filename suffix (`-not-started`, `-in-progress`, `-done`, `-paused`); a `> **Paused` banner pauses it | Latest of filename date, dates in `> **` banners, the file's last git commit |
 | quayside tasks | `tasks.py` | `## Open` or `## Done` section, or a checked box | The `(added YYYY-MM-DD)` date |
 | GitHub | `github.py` | Open, draft, ready for review, merged, closed | `updatedAt` |
-| RH Task Tracker CSV | `tracker.py` | `Status` column (To Do, Backlog, In progress, Done) | Latest of Date added, Last update, dates in Status Update |
+| RH Task Tracker CSV | `tracker.py` | `Status` column (To Do, Backlog, In progress, Done; Shelved counts as backlog) | Latest of Date added, Last update, dates in Status Update |
 
 GitHub is read with four GraphQL searches per owner: open tickets, open PRs, PRs merged in the window, and tickets closed in the window. Any `owner/repo#N` that another source mentions but the searches did not return is then fetched one by one (at most 150), so cross-source checks see its real state. Excluded repos are never looked up. Ticket and PR bodies are scanned for signals and then dropped; they are never written to the snapshot.
 
@@ -105,8 +105,8 @@ An item is stuck when it is claimed (in progress, draft PR, PR in review, or a c
 
 ### What looks done but is not closed
 
-- The item's own text says it is done (a `> **Done` portal banner, or a tracker Status Update saying done, shipped, merged, or live) while its status is still open.
-- Every tracking link of a portal, task, or tracker row (among the links that could be resolved) is closed or merged.
+- A portal's `> **Done` banner says it is done while its filename is still open. Tracker Status Update prose is not used: on the real tracker, words like "live", "done" and "complete" mostly appeared in partial or unrelated contexts.
+- Every tracking link of a portal, task, or tracker row (among the links that could be resolved) is closed or merged. The evidence names each link, whether it was merged or closed, and the day. It is **strong** when every link closed after the day the row was added, and **weak** when a link closed within a day of it (the link may be background). A link that closed more than a day before the row existed is treated as background and ignored. Strong findings sort first.
 - A merged PR says it closes an open ticket.
 - A done portal, task, or tracker row links to a GitHub item that is still open.
 - A portal lists a GitHub item as done while that item is still open.
@@ -158,6 +158,7 @@ This version makes no LLM call. The seam is the snapshot: `snapshot.json` (schem
 - Agent authorship is read from the PR body and head commit only; an agent PR with neither marker counts as human.
 - Short refs like `repo#12` resolve only when exactly one owner has a repo by that name; bare `#12` and `PR #73` are ignored.
 - GitHub search returns at most 1000 results per query; the report says when a query was truncated.
+- Done evidence that lives outside a link (repo contents, deploy history, Keep git history) is invisible; a tracker row that links only a repo root, or nothing, cannot be cross-checked.
 - TASKS.md has no per-task activity date, so an old task always reads as stuck.
 - Lookups and portal git dates run one process at a time. A live run takes about a minute, mostly GitHub search.
 - The default `--out` is a session scratchpad path on this Mac; pass `--out` anywhere else.

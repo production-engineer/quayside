@@ -2,7 +2,7 @@ from dataclasses import dataclass, field, fields
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
-DATE_FIELDS = ("created", "last_activity")
+DATE_FIELDS = ("created", "last_activity", "closed_on")
 HOME_ZONE = ZoneInfo("America/Anchorage")
 
 
@@ -49,6 +49,7 @@ class WorkItem:
     status_refs: list[str] = field(default_factory=list)
     done_refs: list[str] = field(default_factory=list)
     bot_authored: bool = False
+    closed_on: date | None = None
     verdict: str | None = None
     verdict_evidence: str | None = None
     evidence: list[str] = field(default_factory=list)
